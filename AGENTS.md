@@ -1,1 +1,5 @@
-Unitree_SDK2 的官方仓库位置在 @/home/nullsky/unitree_sdk2/ ，可以在这里找到 Unitree_SDK2 的接口定义以及代码示例。
+Unitree_SDK2 的官方仓库位置在 @unitree_sdk2/ ，可以在这里找到 Unitree_SDK2 的接口定义以及代码示例。
+
+在完成代码更改（如编写完新功能或修复 Bug）后，请务必同步更新项目文档：
+1. **README.md**：应包含仓库的整体架构描述，确保其与最新代码实现保持一致。
+2. **docs/ 目录**：具体的模块使用说明、接口调用示例等详细文档应放在 `docs/` 目录下，不要放在 README 中。
