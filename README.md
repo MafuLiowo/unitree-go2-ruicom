@@ -39,15 +39,19 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make
 ```
 
-## 运行
+
 
 确保机器人和 PC 在同一网络下：
 
 ```bash
+# 默认使用默认网卡
 ./go2_video_client
+
+# 也可以指定网卡（如 eth0, wlan0 等）
+./go2_video_client eth0
 ```
 
-按 `q` 或 `Esc` 退出。
+按 `q` 或 `Esc` 退出，按 `s` 键抓拍并保存当前画面。
 
 ## 模块文档
 
