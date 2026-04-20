@@ -4,9 +4,8 @@
 #include <thread>
 #include <chrono>
 using namespace std;
-int main()
+int main(int argc, char** argv)
 {
-    {
     string netInterface;
     if (argc > 1) {
         netInterface = argv[1];
