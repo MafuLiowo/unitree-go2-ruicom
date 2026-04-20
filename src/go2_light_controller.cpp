@@ -2,9 +2,17 @@
 #include <unitree/robot/go2/vui/vui_client.hpp>
 #include <unistd.h>
 using namespace std;
-int main()
+int main(int argc, char** argv)
 {
-    unitree::robot::ChannelFactory::Instance()->Init(0, "enx00e04c36141b");//enx00e04c36141b为网口号，用户根据自身情况修改
+    std::string netInterface;
+    if (argc > 1) {
+        netInterface = argv[1];
+    } else {
+        std::cout << "Usage: " << argv[0] << " <network_interface>" << std::endl;
+        std::cout << "Example: " << argv[0] << " enx00e04c36141b" << std::endl;
+        return -1;
+    }
+    unitree::robot::ChannelFactory::Instance()->Init(0, netInterface);
     unitree::robot::go2::VuiClient lc;
     lc.Init();
     usleep(500000); //不知道是否有时间功能
