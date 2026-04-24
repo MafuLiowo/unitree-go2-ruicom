@@ -9,6 +9,11 @@ public:
     LineProcessor();
 
     cv::Mat process(const std::vector<uint8_t>& rawData);
+    cv::Mat process(const cv::Mat& frame);
+
+    // Returns the x-coordinate of the line center in the ROI, 
+    // or -1 if no line is detected.
+    float getLineCenter(const cv::Mat& binary);
 
     void setThreshold(int threshold);
     void setROI(cv::Rect roi);

@@ -36,6 +36,7 @@ find_library(DDSCXX_LIB ddscxx
 
 find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(realsense2 REQUIRED)
 
 if(DDSC_LIB)
   add_library(ddsc SHARED IMPORTED GLOBAL)
@@ -72,6 +73,18 @@ include_directories(/usr/include/ddsc)
 # LineProcessor library
 add_library(LineProcessor src/LineProcessor.cpp)
 target_link_libraries(LineProcessor ${OpenCV_LIBS})
+
+# Line following executable
+add_executable(go2_line_following src/go2_line_following.cpp)
+target_link_libraries(go2_line_following 
+    LineProcessor
+    unitree_sdk2 
+    ddsc 
+    ddscxx 
+    ${OpenCV_LIBS} 
+    Threads::Threads 
+    realsense2::realsense2
+)
 
 # Example executable
 add_executable(go2_video_client src/go2_video_client.cpp)

@@ -1,3 +1,11 @@
+/**
+ * @file YOLODetector.cpp
+ * @brief 基于 YOLO 的安全标识检测与推理模块
+ *
+ * @par 模块说明
+ *       封装 ONNX 模型加载、预处理(blobFromImage)、CUDA/CPU 推理、后处理(NMS)及可视化绘制。
+ *       供 go2_safety_detection 等上层模块调用，无需独立运行。
+ */
 #include "YOLODetector.hpp"
 #include <iostream>
 #include <fstream>

@@ -1,3 +1,12 @@
+/**
+ * @file go2_obstacles_avoid.cpp
+ * @brief 障碍物规避客户端，配置并启用 Go2 机器人避障功能
+ *
+ * @par 使用说明
+ *       go2_obstacles_avoid <network_interface>
+ *       示例: ./go2_obstacles_avoid eth0
+ *       说明: 程序启用避障后执行 MoveToIncrementPosition 前进，可修改运动参数
+ */
 #include <iostream>
 #include <unitree/robot/go2/obstacles_avoid/obstacles_avoid_client.hpp>
 #include <unitree/robot/go2/obstacles_avoid/obstacles_avoid_api.hpp>

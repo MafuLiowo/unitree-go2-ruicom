@@ -49,6 +49,12 @@ int main()
 | `setMorphIterations(int erode, int dilate)` | 腐蚀/膨忙迭代次数 | 1, 2 |
 | `setHSVChannel(int)` | HSV通道选择：0-H, 1-S, 2-V | 2 (V) |
 | `setUseAdaptiveThreshold(bool)` | 启用自适应阈值 | false |
+| `getLineCenter(cv::Mat)` | 计算线条质心x坐标 | - |
+
+## 巡线功能接口
+
+- `cv::Mat process(const cv::Mat& frame)`: 直接接收OpenCV矩阵进行处理。
+- `float getLineCenter(const cv::Mat& binary)`: 接收二值化后的图像（通常是 `process` 的返回结果），返回线条在图像中的横坐标质心（0 到 cols 之间）。如果未检测到线条，返回 `-1.0`。
 
 ## 典型配置示例
 

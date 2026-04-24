@@ -1,3 +1,12 @@
+/**
+ * @file go2_light_controller.cpp
+ * @brief 灯光控制客户端，控制 Go2 机器人 LED 灯效
+ *
+ * @par 使用说明
+ *       go2_light_controller <network_interface>
+ *       示例: ./go2_light_controller eth0
+ *       说明: 程序自动设置 LED 亮度为 5 级，可通过修改 level 变量调整
+ */
 #include <iostream>
 #include <unitree/robot/go2/vui/vui_client.hpp>
 #include <unistd.h>
