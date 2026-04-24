@@ -1,3 +1,7 @@
+/**
+ * @file YOLODetector.cpp
+ * @brief 基于 YOLO 的安全标识检测与推理模块
+ */
 #include "YOLODetector.hpp"
 #include <iostream>
 #include <fstream>

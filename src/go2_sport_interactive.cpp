@@ -1,3 +1,7 @@
+/**
+ * @file go2_sport_interactive.cpp
+ * @brief 交互式运动控制客户端，支持 Stretch 和 Hello 等运动指令
+ */
 #include <iostream>
 #include <limits>
 #include <unitree/robot/go2/sport/sport_client.hpp>

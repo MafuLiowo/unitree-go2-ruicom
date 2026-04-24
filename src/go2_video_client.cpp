@@ -1,3 +1,7 @@
+/**
+ * @file go2_video_client.cpp
+ * @brief Unitree Go2 机器人视频流客户端，实时拉取并显示相机画面
+ */
 #include <unitree/robot/go2/video/video_client.hpp>
 #include <opencv2/opencv.hpp>
 #include <iostream>

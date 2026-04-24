@@ -1,3 +1,7 @@
+/**
+ * @file LineProcessor.cpp
+ * @brief 图像线条检测处理器，提供图像预处理、二值化、形态学操作和线条质心计算
+ */
 #include "LineProcessor.hpp"
 
 /**

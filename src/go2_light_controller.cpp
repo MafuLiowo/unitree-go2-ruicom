@@ -1,3 +1,7 @@
+/**
+ * @file go2_light_controller.cpp
+ * @brief 灯光控制客户端，控制 Go2 机器人 LED 灯效
+ */
 #include <iostream>
 #include <unitree/robot/go2/vui/vui_client.hpp>
 #include <unistd.h>

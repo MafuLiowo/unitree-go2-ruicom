@@ -1,3 +1,7 @@
+/**
+ * @file go2_obstacles_avoid.cpp
+ * @brief 障碍物规避客户端，配置并启用 Go2 机器人避障功能
+ */
 #include <iostream>
 #include <unitree/robot/go2/obstacles_avoid/obstacles_avoid_client.hpp>
 #include <unitree/robot/go2/obstacles_avoid/obstacles_avoid_api.hpp>
