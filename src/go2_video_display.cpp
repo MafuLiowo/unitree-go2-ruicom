@@ -32,7 +32,7 @@ int main(int argc, char** argv)
 
     std::vector<uint8_t> image_sample;
 
-    cv::namedWindow("Go2 Camera", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Go2 Camera", cv::WINDOW_NORMAL);
     std::cout << "按 [q] 或 [Esc] 退出程序" << std::endl;
 
     while (true) {
@@ -43,7 +43,9 @@ int main(int argc, char** argv)
             cv::Mat frame = cv::imdecode(rawData, cv::IMREAD_COLOR);
 
             if (!frame.empty()) {
-                cv::imshow("Go2 Camera", frame);
+                cv::Mat display;
+                cv::resize(frame, display, cv::Size(), 3.0, 3.0, cv::INTER_LINEAR);
+                cv::imshow("Go2 Camera", display);
             }
         }
 

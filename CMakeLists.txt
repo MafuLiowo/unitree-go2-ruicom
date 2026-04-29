@@ -101,9 +101,32 @@ target_link_libraries(go2_safety_detection
     Threads::Threads
 )
 
-# Image processing executable
-add_executable(go2_process_images src/go2_process_images.cpp)
-target_link_libraries(go2_process_images unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+# Image processing library (shared between go2_process_images and go2_seeking_way)
+add_library(ImageProcessor src/go2_process_images.cpp)
+target_include_directories(ImageProcessor PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ImageProcessor ${OpenCV_LIBS})
+
+# Visual path seeking main program
+add_executable(go2_seeking_way src/go2_seeking_way.cpp)
+target_link_libraries(go2_seeking_way
+    ImageProcessor
+    unitree_sdk2
+    ddsc
+    ddscxx
+    ${OpenCV_LIBS}
+    Threads::Threads
+)
+
+# Standalone image processing executable
+add_executable(go2_process_images src/go2_process_images_main.cpp)
+target_link_libraries(go2_process_images
+    ImageProcessor
+    unitree_sdk2
+    ddsc
+    ddscxx
+    ${OpenCV_LIBS}
+    Threads::Threads
+)
 
 # Test program for YOLO detector
 # add_executable(test_yolo src/test_yolo.cpp)
