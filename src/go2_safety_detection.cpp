@@ -1,3 +1,13 @@
+/**
+ * @file go2_safety_detection.cpp
+ * @brief 安全标识识别与检测模块，结合 YOLO 检测和运动控制进行实时响应
+ *
+ * @par 使用说明
+ *       go2_safety_detection <network_interface>
+ *       示例: ./go2_safety_detection eth0
+ *       控制: [s] 保存当前帧  [q/Esc] 退出
+ *       说明: 模型文件需位于 ../models/yolov8n_safety_signs.onnx
+ */
 #include <unitree/robot/go2/video/video_client.hpp>
 #include <unitree/robot/go2/sport/sport_client.hpp>
 #include <unitree/robot/channel/channel_factory.hpp>
