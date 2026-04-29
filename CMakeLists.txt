@@ -77,6 +77,10 @@ target_link_libraries(LineProcessor ${OpenCV_LIBS})
 add_executable(go2_video_client src/go2_video_client.cpp)
 target_link_libraries(go2_video_client unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
 
+# Video display executable
+add_executable(go2_video_display src/go2_video_display.cpp)
+target_link_libraries(go2_video_display unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+
 # Interactive sport client
 add_executable(go2_sport_interactive src/go2_sport_interactive.cpp)
 target_link_libraries(go2_sport_interactive unitree_sdk2 ddsc ddscxx Threads::Threads)
@@ -96,6 +100,10 @@ target_link_libraries(go2_safety_detection
     ${OpenCV_LIBS}
     Threads::Threads
 )
+
+# Image processing executable
+add_executable(go2_process_images src/go2_process_images.cpp)
+target_link_libraries(go2_process_images unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
 
 # Test program for YOLO detector
 # add_executable(test_yolo src/test_yolo.cpp)
