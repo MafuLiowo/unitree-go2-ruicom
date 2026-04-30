@@ -23,13 +23,22 @@
 #include <string>
 #include <cmath>
 
+/**
+ * @brief 寻路状态机枚举，定义机器人在视觉寻路过程中的各个阶段
+ */
 enum class SeekState {
-    FORWARD,
-    TURN_DETECTED,
-    TURN_APPROACH,
-    TURN_ROTATING
+    FORWARD,        // 正常前进，沿路径中点调整偏航角
+    TURN_DETECTED,  // 检测到转弯点，准备靠近转弯位置
+    TURN_APPROACH,  // 预留：靠近转弯点后的过渡状态
+    TURN_ROTATING   // 正在旋转 90 度，完成后回到 FORWARD 状态
 };
 
+/**
+ * @brief Go2 视觉寻路系统主函数
+ * @param argc 命令行参数个数
+ * @param argv 命令行参数数组，argv[1] 为网络接口名称（如 eth0）
+ * @return int 程序退出码，0 表示正常退出，-1 表示参数错误
+ */
 int main(int argc, char** argv)
 {
     std::string netInterface;
@@ -41,12 +50,13 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    const float forwardSpeed = 0.2f;
-    const float maxYawSpeed = 0.5f;
-    const float kP = 1.6f;
-    const float turnApproachDistance = 0.25f;
-    const double turnCooldownSec = 4.0;
-    const int turnDetectionFrames = 4;
+    // 运动控制与检测参数
+    const float forwardSpeed = 0.2f;             // 前进线速度 (m/s)
+    const float maxYawSpeed = 0.5f;              // 最大偏航角速度 (rad/s)
+    const float kP = 1.6f;                       // 比例控制器增益系数
+    const float turnApproachDistance = 0.25f;    // 转弯前的前进补偿距离 (m)
+    const double turnCooldownSec = 4.0;          // 两次转弯之间的冷却时间 (s)
+    const int turnDetectionFrames = 4;           // 连续检测到转弯的帧数阈值
 
     std::cout << "========================================" << std::endl;
     std::cout << "Go2 Visual Path Seeking System" << std::endl;
@@ -59,10 +69,12 @@ int main(int argc, char** argv)
 
     unitree::robot::ChannelFactory::Instance()->Init(0, netInterface);
 
+    // 初始化视频客户端，用于获取 Go2 摄像头实时画面
     unitree::robot::go2::VideoClient videoClient;
     videoClient.SetTimeout(1.0f);
     videoClient.Init();
 
+    // 初始化避障运动控制客户端，启用 API 远程指令模式
     unitree::robot::go2::ObstaclesAvoidClient oaClient;
     oaClient.SetTimeout(10.0f);
     oaClient.Init();
@@ -101,6 +113,7 @@ int main(int argc, char** argv)
         if (frame.empty()) continue;
 
         frameCount++;
+        // 将彩色帧转为高对比度二值图，再分析路径特征
         cv::Mat highContrast = toHighContrast(frame, 70);
         PathAnalysis analysis = analyzePath(highContrast);
 
@@ -108,16 +121,19 @@ int main(int argc, char** argv)
 
         switch (state) {
         case SeekState::FORWARD: {
+            // 等待用户确认后才开始运动
             if (!userConfirmed) {
                 oaClient.Move(0.0f, 0.0f, 0.0f);
                 break;
             }
             if (analysis.pathFound) {
+                // 比例控制：根据路径中点偏移量计算偏航角速度
                 float error = 0.5f - analysis.midpointX;
                 float yawCmd = kP * error;
                 yawCmd = std::max(-maxYawSpeed, std::min(maxYawSpeed, yawCmd));
                 oaClient.Move(forwardSpeed, 0.0f, yawCmd);
 
+                // 累积检测转弯帧数，连续满足条件时触发转弯状态切换
                 if (analysis.isTurn &&
                     (currentTime - lastActionTime) > turnCooldownSec &&
                     turnDetectionCount < turnDetectionFrames) {
@@ -134,12 +150,14 @@ int main(int argc, char** argv)
                     turnDetectionCount = 0;
                 }
             } else {
+                // 未检测到路径时停止运动
                 oaClient.Move(0.0f, 0.0f, 0.0f);
                 turnDetectionCount = 0;
             }
             break;
         }
         case SeekState::TURN_DETECTED: {
+            // 先停止，再以增量方式前进到转弯点附近
             oaClient.Move(0.0f, 0.0f, 0.0f);
             std::cout << "[TURN] Approaching turn point... moving forward "
                       << turnApproachDistance << " m" << std::endl;
@@ -148,6 +166,7 @@ int main(int argc, char** argv)
             break;
         }
         case SeekState::TURN_ROTATING: {
+            // 根据检测到的转弯方向旋转约 90 度
             float turnAngle = (detectedTurnDirection > 0) ? -(float)M_PI_2 : (float)M_PI_2;
             std::cout << "[TURN] Rotating " << (detectedTurnDirection > 0 ? "RIGHT" : "LEFT")
                       << " 90 degrees..." << std::endl;
@@ -159,6 +178,7 @@ int main(int argc, char** argv)
         }
         }
 
+        // 在原图上绘制路径中点指示线与状态信息
         cv::Mat rawDisplay = frame.clone();
         if (analysis.pathFound) {
             int midX = (int)(analysis.midpointX * (float)rawDisplay.cols);
@@ -194,6 +214,7 @@ int main(int argc, char** argv)
         cv::imshow("Go2 Camera", rawDisplay);
         cv::imshow("High Contrast Analysis", analysis.displayImage);
 
+        // 首次检测到路径时暂停，等待用户确认后再开始运动
         if (!userConfirmed && analysis.pathFound) {
             cv::waitKey(1);
             std::cout << "\n[CONFIRM] Path detected at frame " << frameCount << "!" << std::endl;

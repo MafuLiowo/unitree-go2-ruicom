@@ -17,6 +17,12 @@
 #include <vector>
 #include <cstdint>
 
+/**
+ * @brief Go2 图像处理显示程序主函数
+ * @param argc 命令行参数个数
+ * @param argv 命令行参数数组，argv[1] 为网络接口名称（如 eth0）
+ * @return int 程序退出码，0 表示正常退出，-1 表示参数错误
+ */
 int main(int argc, char** argv)
 {
     std::string netInterface;
