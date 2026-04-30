@@ -190,7 +190,7 @@ PathAnalysis analyzePath(const cv::Mat& binary)
                     cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
     }
 
-    // 放大 3 倍以方便观察（使用最近邻插值保持像素清晰）
-    cv::resize(display, result.displayImage, cv::Size(), 3.0, 3.0, cv::INTER_NEAREST);
+    // 保持原始尺寸（使用最近邻插值保持像素清晰）
+    cv::resize(display, result.displayImage, cv::Size(), 1.0, 1.0, cv::INTER_NEAREST);
     return result;
 }

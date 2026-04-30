@@ -54,7 +54,7 @@ int main(int argc, char** argv)
     std::vector<uint8_t> image_sample;
     int save_counter = 0;
 
-    cv::namedWindow("Go2 Camera", cv::WINDOW_NORMAL);
+    cv::namedWindow("Go2 Camera", cv::WINDOW_AUTOSIZE);
     std::cout << "控制说明: [s] 保存图片 | [q/Esc] 退出程序" << std::endl;
 
     while (true) {
@@ -66,7 +66,7 @@ int main(int argc, char** argv)
 
             if (!frame.empty()) {
                 cv::Mat display;
-                cv::resize(frame, display, cv::Size(), 3.0, 3.0, cv::INTER_LINEAR);
+                cv::resize(frame, display, cv::Size(), 1.0, 1.0, cv::INTER_LINEAR);
                 cv::imshow("Go2 Camera", display);
 
                 char key = (char)cv::waitKey(1);
