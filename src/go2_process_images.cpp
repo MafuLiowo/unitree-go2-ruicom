@@ -6,11 +6,13 @@
  *       本模块为库文件，提供 toHighContrast() 和 analyzePath() 两个核心函数，
  *       供 go2_seeking_way 和 go2_process_images_main 等可执行程序调用。
  *       - toHighContrast(): 将彩色图像转为高对比度二值图，提取白色路径区域
- *       - analyzePath(): 分析二值图中的路径中点位置、转弯检测等特征
+ *       - analyzePath(): 使用连通域分析，在白色二值图中选取最靠近图像中央的
+ *         连续白色区域，以其质心横坐标作为路径中点，并进行转弯检测
  */
 #include "ImageProcessor.hpp"
 #include <opencv2/opencv.hpp>
 #include <cmath>
+#include <cfloat>
 
 /**
  * @brief 将彩色帧转换为高对比度二值图像，提取白色可行路径区域
@@ -32,7 +34,13 @@ cv::Mat toHighContrast(const cv::Mat& frame, int thresholdValue)
 }
 
 /**
- * @brief 分析二值化图像中的路径特征，包括路径中点位置、白色比例、转弯检测
+ * @brief 使用连通域分析二值化图像中的路径特征
+ *
+ * @par 算法说明
+ *       在近端区域内进行连通域分析，找出所有连续白色区域（连通域），
+ *       选取其中水平位置最靠近图像中央的连通域，以其质心横坐标作为路径中点。
+ *       该算法可有效避开图像左右两侧的离散噪点，聚焦于中央区域的实际路径。
+ *
  * @param binary 输入的二值化图像（白色=可行路径，黑色=障碍/不可行区域）
  * @return PathAnalysis 包含路径分析结果的结构体
  */
@@ -91,6 +99,10 @@ PathAnalysis analyzePath(const cv::Mat& binary)
     float totalWhite = (float)(leftPixels + centerPixels + rightPixels);
     result.whiteRatio = (totalNearPixels > 0) ? totalWhite / totalNearPixels : 0.0f;
 
+    // 记录选中连通域的边界框，用于可视化
+    int selectedBlobLeft = 0, selectedBlobTop = 0;
+    int selectedBlobWidth = 0, selectedBlobHeight = 0;
+
     // 白色像素过少时认为没有检测到路径
     if (totalWhite < 15)
     {
@@ -99,17 +111,53 @@ PathAnalysis analyzePath(const cv::Mat& binary)
     }
     else
     {
-        result.pathFound = true;
+        // 连通域分析：在近端区域内找出所有连续白色区域
+        // 从中选取水平位置最靠近图像中央的连通域，以其质心横坐标作为路径中点
+        cv::Mat labels, stats, centroids;
+        int nComponents = cv::connectedComponentsWithStats(
+            nearZone, labels, stats, centroids, 8, CV_32S);
 
-        // 加权平均法计算路径的水平中点位置（0.0=最左，1.0=最右）
-        float weightedSum = 0.0f;
-        for (int col = 0; col < imgWidth; col++)
+        int bestComponent = -1;
+        float bestCenterX = 0.5f;
+        float bestDist = FLT_MAX;
+        int bestArea = 0;
+        const int minBlobArea = 15;  // 最小连通域面积，过滤离散噪点
+
+        for (int i = 1; i < nComponents; i++)
         {
-            int whiteCount = cv::countNonZero(
-                nearZone(cv::Rect(col, 0, 1, nearHeight)));
-            weightedSum += (float)whiteCount * ((float)col / (float)imgWidth);
+            int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            if (area < minBlobArea) continue;
+
+            double cx = centroids.at<double>(i, 0);
+            float normalizedCx = (float)cx / (float)imgWidth;
+            float dist = std::abs(normalizedCx - 0.5f);
+
+            // 优先选靠近中央的连通域；距离相同时选面积更大者
+            if (dist < bestDist || (dist == bestDist && area > bestArea))
+            {
+                bestDist = dist;
+                bestComponent = i;
+                bestCenterX = normalizedCx;
+                bestArea = area;
+            }
         }
-        result.midpointX = weightedSum / totalWhite;
+
+        if (bestComponent >= 0)
+        {
+            result.pathFound = true;
+            result.midpointX = bestCenterX;
+
+            // 记录选中连通域的边界框（在 nearZone 坐标系中）
+            selectedBlobLeft   = stats.at<int>(bestComponent, cv::CC_STAT_LEFT);
+            selectedBlobTop    = stats.at<int>(bestComponent, cv::CC_STAT_TOP);
+            selectedBlobWidth  = stats.at<int>(bestComponent, cv::CC_STAT_WIDTH);
+            selectedBlobHeight = stats.at<int>(bestComponent, cv::CC_STAT_HEIGHT);
+        }
+        else
+        {
+            result.pathFound = false;
+            result.midpointX = -1.0f;
+        }
 
         // 在远端区域内划分左、中、右三个子区域
         cv::Rect farLeftRect(0, 0, leftBandEnd, farHeight);
@@ -125,24 +173,27 @@ PathAnalysis analyzePath(const cv::Mat& binary)
         float farRightRatio  = (totalRight > 0)  ? farRightPixels / totalRight : 0.0f;
 
         // 转弯检测条件：路径中点偏离中心、中间区域空旷、且某一侧有大量白色像素
-        bool nearOffCenter = result.midpointX < 0.15f || result.midpointX > 0.85f;
-        bool nearCenterEmpty = result.centerWhiteRatio < 0.015f;
-        bool strongLeftSide = result.leftWhiteRatio > result.centerWhiteRatio * 4.0f
-                              && result.leftWhiteRatio > 0.03f;
-        bool strongRightSide = result.rightWhiteRatio > result.centerWhiteRatio * 4.0f
-                               && result.rightWhiteRatio > 0.03f;
-
-        if (nearOffCenter && nearCenterEmpty && farCenterRatio < 0.02f)
+        if (result.pathFound)
         {
-            if (strongLeftSide && result.leftWhiteRatio > farLeftRatio * 0.5f)
+            bool nearOffCenter = result.midpointX < 0.15f || result.midpointX > 0.85f;
+            bool nearCenterEmpty = result.centerWhiteRatio < 0.015f;
+            bool strongLeftSide = result.leftWhiteRatio > result.centerWhiteRatio * 4.0f
+                                  && result.leftWhiteRatio > 0.03f;
+            bool strongRightSide = result.rightWhiteRatio > result.centerWhiteRatio * 4.0f
+                                   && result.rightWhiteRatio > 0.03f;
+
+            if (nearOffCenter && nearCenterEmpty && farCenterRatio < 0.02f)
             {
-                result.isTurn = true;
-                result.turnDirection = -1;  // 左转弯
-            }
-            else if (strongRightSide && result.rightWhiteRatio > farRightRatio * 0.5f)
-            {
-                result.isTurn = true;
-                result.turnDirection = 1;   // 右转弯
+                if (strongLeftSide && result.leftWhiteRatio > farLeftRatio * 0.5f)
+                {
+                    result.isTurn = true;
+                    result.turnDirection = -1;  // 左转弯
+                }
+                else if (strongRightSide && result.rightWhiteRatio > farRightRatio * 0.5f)
+                {
+                    result.isTurn = true;
+                    result.turnDirection = 1;   // 右转弯
+                }
             }
         }
     }
@@ -181,6 +232,15 @@ PathAnalysis analyzePath(const cv::Mat& binary)
         int centerX = imgWidth / 2;
         cv::line(display, cv::Point(centerX, nearStart), cv::Point(dotX, dotY),
                  cv::Scalar(0, 255, 0), 2);
+
+        // 绘制选中连通域的边界框（青色），将 nearZone 坐标平移回全图坐标
+        if (selectedBlobWidth > 0 && selectedBlobHeight > 0)
+        {
+            cv::rectangle(display,
+                cv::Rect(selectedBlobLeft, selectedBlobTop + nearStart,
+                         selectedBlobWidth, selectedBlobHeight),
+                cv::Scalar(255, 255, 0), 2);
+        }
     }
 
     if (result.isTurn)

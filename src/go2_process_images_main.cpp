@@ -1,11 +1,18 @@
 /**
  * @file go2_process_images_main.cpp
- * @brief Go2 机器人图像处理独立显示程序，实时分析路径中点并显示在双窗口中
+ * @brief Go2 机器人图像处理独立显示程序，使用连通域分析实时定位路径中点并显示在双窗口中
  *
  * @par 使用说明
  *       ./go2_process_images <network_interface>
  *       示例: ./go2_process_images eth0
  *       控制: [q/Esc] 退出程序
+ *
+ * @par 工作原理
+ *       - 从Go2摄像头获取实时画面
+ *       - 调用 go2_process_images 的图像处理逻辑：高对比度二值化后，
+ *         在近端区域进行连通域分析，选取最靠近图像中央的白色连通域，
+ *         以其质心横坐标作为路径中点
+ *       - 在原始画面和高对比度分析视图中分别绘制路径指示线
  */
 #include <unitree/robot/go2/video/video_client.hpp>
 #include <unitree/robot/channel/channel_factory.hpp>
@@ -36,6 +43,7 @@ int main(int argc, char** argv)
 
     std::cout << "========================================" << std::endl;
     std::cout << "Go2 Image Processing Display" << std::endl;
+    std::cout << "Algorithm: connected-component path analysis" << std::endl;
     std::cout << "========================================" << std::endl;
     std::cout << "Network interface: " << netInterface << std::endl;
     std::cout << "Press [q] or [Esc] to exit." << std::endl;
@@ -65,6 +73,7 @@ int main(int argc, char** argv)
 
         frameCount++;
 
+        // 高对比度二值化 + 连通域路径分析
         cv::Mat highContrast = toHighContrast(frame, 70);
         PathAnalysis analysis = analyzePath(highContrast);
 
@@ -74,10 +83,11 @@ int main(int argc, char** argv)
             cv::line(rawDisplay, cv::Point(midX, 0), cv::Point(midX, rawDisplay.rows),
                      cv::Scalar(0, 255, 0), 2);
 
-            cv::putText(rawDisplay, "PATH FOUND", cv::Point(10, 30),
+            cv::putText(rawDisplay, "PATH FOUND (blob centroid)", cv::Point(10, 30),
                         cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
             char buf[64];
-            snprintf(buf, sizeof(buf), "Mid: %.2f", analysis.midpointX);
+            snprintf(buf, sizeof(buf), "Mid: %.3f  White: %.2f%%",
+                     analysis.midpointX, analysis.whiteRatio * 100.0f);
             cv::putText(rawDisplay, buf, cv::Point(10, 55),
                         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
         } else {
