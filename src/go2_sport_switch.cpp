@@ -10,7 +10,6 @@
  *           [2] Stretch (伸懒腰)
  *           [3] StopMove (停止运动)
  *           [4] FrontJump (前跳)
- *           [5] WalkStair (行走楼梯)
  *           [0] 退出
  */
 #include <iostream>
@@ -45,7 +44,6 @@ int main(int argc, char **argv)
     std::cout << "  2: Stretch  (伸懒腰)" << std::endl;
     std::cout << "  3: StopMove (停止运动)" << std::endl;
     std::cout << "  4: FrontJump(前跳)" << std::endl;
-    std::cout << "  5: WalkStair(行走楼梯)" << std::endl;
     std::cout << "  0: 退出" << std::endl;
 
     // 交互式命令循环
@@ -77,12 +75,9 @@ int main(int argc, char **argv)
         case 4:
             sport.FrontJump();
             break;
-        case 5:
-            sport.WalkStair();
-            break;
         default:
             std::cout << "未知指令: " << input
-                      << "，请输入 1-5 或 0 退出。" << std::endl;
+                      << "，请输入 1-4 或 0 退出。" << std::endl;
             break;
         }
     }

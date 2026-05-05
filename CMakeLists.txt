@@ -70,9 +70,9 @@ include_directories(/usr/local/include/ddsc)
 include_directories(/usr/include/ddscxx)
 include_directories(/usr/include/ddsc)
 
-# ImageProcessor library (连通域分析/路径检测)
-add_library(ImageProcessor src/go2_process_images.cpp)
-target_link_libraries(ImageProcessor ${OpenCV_LIBS})
+# ImageProcessor library (连通域分析/路径检测) — 暂不可编译
+# add_library(ImageProcessor src/go2_process_images.cpp)
+# target_link_libraries(ImageProcessor ${OpenCV_LIBS})
 
 # Process image executable (HSV颜色识别与V通道反二值化)
 add_executable(go2_process_image src/go2_process_image.cpp)
@@ -83,10 +83,10 @@ add_executable(go2_video_display src/go2_video_display.cpp)
 target_link_libraries(go2_video_display ${OpenCV_LIBS} realsense2::realsense2)
 
 # Seeking way executable (视觉寻路)
-add_executable(go2_seeking_way src/go2_seeking_way.cpp)
-target_link_libraries(go2_seeking_way ImageProcessor unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+# add_executable(go2_seeking_way src/go2_seeking_way.cpp)
+# target_link_libraries(go2_seeking_way ImageProcessor unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
 
-# Sport switch executable (高层运动控制，支持 Stretch/Hello/StopMove/FrontJump/WalkStair)
+# Sport switch executable (高层运动控制，支持 Stretch/Hello/StopMove/FrontJump)
 add_executable(go2_sport_switch src/go2_sport_switch.cpp)
 target_link_libraries(go2_sport_switch unitree_sdk2 ddsc ddscxx Threads::Threads)
 

@@ -1,6 +1,6 @@
 /**
  * @file Go2SportSwitch.hpp
- * @brief Go2 机器人高层运动控制封装，提供 Stretch、Hello、StopMove、FrontJump 及 WalkStair 等运动指令接口
+ * @brief Go2 机器人高层运动控制封装，提供 Stretch、Hello、StopMove 及 FrontJump 等运动指令接口
  *
  * @par 使用说明
  *       - 本模块为库文件，封装 Unitree SDK2 的 SportClient，供其他程序直接调用
