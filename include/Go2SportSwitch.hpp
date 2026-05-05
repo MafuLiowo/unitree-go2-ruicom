@@ -87,16 +87,6 @@ public:
         sport_client_.FrontJump();
     }
 
-    /**
-     * @brief 执行行走楼梯（WalkStair）动作
-     *
-     * 机器狗切换至爬楼梯步态模式，用于攀爬台阶或楼梯场景。
-     */
-    void WalkStair()
-    {
-        std::cout << ">>> 执行动作: WalkStair (行走楼梯)" << std::endl;
-        sport_client_.WalkStair();
-    }
 
 private:
     unitree::robot::go2::SportClient sport_client_; ///< Unitree SDK2 运动客户端实例
