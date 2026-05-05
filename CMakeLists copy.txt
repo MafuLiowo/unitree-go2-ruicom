@@ -70,26 +70,47 @@ include_directories(/usr/local/include/ddsc)
 include_directories(/usr/include/ddscxx)
 include_directories(/usr/include/ddsc)
 
+# LineProcessor library
+add_library(LineProcessor src/LineProcessor.cpp)
+target_link_libraries(LineProcessor ${OpenCV_LIBS})
+
 # ImageProcessor library (连通域分析/路径检测)
 add_library(ImageProcessor src/go2_process_images.cpp)
 target_link_libraries(ImageProcessor ${OpenCV_LIBS})
 
+# Line following executable
+add_executable(go2_line_following src/go2_line_following.cpp)
+target_link_libraries(go2_line_following 
+    LineProcessor
+    unitree_sdk2 
+    ddsc 
+    ddscxx 
+    ${OpenCV_LIBS} 
+    Threads::Threads 
+    realsense2::realsense2
+)
+
+# Example executable
+add_executable(go2_video_client src/go2_video_client.cpp)
+target_link_libraries(go2_video_client unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+
+# Video display executable
+add_executable(go2_video_display src/go2_video_display.cpp)
+target_link_libraries(go2_video_display unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads realsense2::realsense2)
+
+# Interactive sport client
+add_executable(go2_sport_interactive src/go2_sport_interactive.cpp)
+target_link_libraries(go2_sport_interactive unitree_sdk2 ddsc ddscxx Threads::Threads)
+
+# Process images display executable
+add_executable(go2_process_images_main src/go2_process_images_main.cpp)
+target_link_libraries(go2_process_images_main ImageProcessor unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+
 # Process image executable (HSV颜色识别与V通道反二值化)
 add_executable(go2_process_image src/go2_process_image.cpp)
-target_link_libraries(go2_process_image ${OpenCV_LIBS} realsense2::realsense2)
-
-# Video display executable (RealSense实时画面显示)
-add_executable(go2_video_display src/go2_video_display.cpp)
-target_link_libraries(go2_video_display ${OpenCV_LIBS} realsense2::realsense2)
+target_link_libraries(go2_process_image unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads realsense2::realsense2)
 
 # Seeking way executable (视觉寻路)
 add_executable(go2_seeking_way src/go2_seeking_way.cpp)
 target_link_libraries(go2_seeking_way ImageProcessor unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
 
-# Sport switch executable (高层运动控制，支持 Stretch/Hello/StopMove/FrontJump/WalkStair)
-add_executable(go2_sport_switch src/go2_sport_switch.cpp)
-target_link_libraries(go2_sport_switch unitree_sdk2 ddsc ddscxx Threads::Threads)
-
-# Light controller executable (前灯控制，支持闪烁等灯效)
-add_executable(go2_light_controller src/go2_light_controller.cpp)
-target_link_libraries(go2_light_controller unitree_sdk2 ddsc ddscxx Threads::Threads)

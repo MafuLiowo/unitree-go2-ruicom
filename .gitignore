@@ -11,3 +11,5 @@ dataset/safety_signs_dataset/runs/detect/train3/val_batch0*
 src/test_yolo.cpp
 repomix-output-tree-master.xml
 repomix-output-unitree-sdk2.xml
+origin/
+.kilo/

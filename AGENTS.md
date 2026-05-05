@@ -51,34 +51,39 @@ float getLineCenter(const cv::Mat& binary);
 
 ```text
 .
-├── AGENTS.md            # 本文件，存放 Agent 指令及仓库结构描述
-├── CMakeLists.txt       # 项目 CMake 构建配置文件
-├── README.md            # 项目自述文件，包含整体架构描述及环境准备说明
-├── build/               # 编译构建目录（通常在 .gitignore 中忽略）
-├── docs/                # 详细模块文档及使用说明目录
-│   └── LineProcessor.md # LineProcessor 模块的使用示例与参数配置
-├── include/             # 头文件目录
-│   └── LineProcessor.hpp
-├── src/                 # 源文件目录
-    ├── LineProcessor.cpp
-    ├── go2_video_client.cpp # 主程序入口，基于 Unitree SDK2 的视频客户端示例
-    └── go2_sport_interactive.cpp # 交互式运动控制客户端，支持 Stretch 和 Hello
+├── AGENTS.md               # 本文件，存放 Agent 指令及仓库结构描述
+├── CMakeLists.txt          # 项目 CMake 构建配置文件
+├── README.md               # 项目自述文件，包含整体架构描述及环境准备说明
+├── build/                  # 编译构建目录（通常在 .gitignore 中忽略）
+├── docs/                   # 详细模块文档及使用说明目录
+│   ├── LineProcessor.md    # LineProcessor 模块的使用示例与参数配置
+│   └── safety_detection.md # 安全检测模块文档
+├── include/                # 头文件目录
+│   ├── Go2SportSwitch.hpp  # Go2 高层运动控制封装，提供 Stretch/Hello/StopMove/FrontJump/WalkStair
+│   └── ImageProcessor.hpp  # 图像处理模块接口（连通域分析、路径检测）
+├── src/                    # 源文件目录
+│   ├── go2_video_display.cpp     # RealSense 实时画面显示程序
+│   ├── go2_process_image.cpp     # HSV 颜色识别与 V 通道反二值化程序
+│   ├── go2_process_images.cpp    # 图像处理模块实现（连通域分析/路径检测）
+│   ├── go2_seeking_way.cpp       # 视觉寻路主程序，基于连通域分析的路径跟踪
+│   ├── go2_sport_switch.cpp      # 高层运动控制交互程序，支持 Stretch/Hello/StopMove/FrontJump/WalkStair
+│   ├── go2_light_controller.cpp  # 灯光控制客户端，控制 Go2 机器人 LED 灯效
+│   └── go2_images_identify.cpp   # 图像标识识别程序（待实现）
 
-└── unitree_sdk2/        # Unitree SDK2 库及头文件
-    ├── build/           # Build artifacts (binaries, CMake cache)
-    ├── cmake/           # CMake configuration files
-    ├── CMakeLists.txt   # Project CMake build configuration
-    ├── example/         # Example code for different robot models and features
-    │   ├── go2/         # Go2 robot examples
-    │   ├── g1/          # G1 robot examples
-    │   ├── h1/          # H1 robot examples
-    │   ├── a2/          # A2 robot examples
-    │   ├── b2/          # B2 robot examples
+└── unitree_sdk2/           # Unitree SDK2 库及头文件
+    ├── build/              # Build artifacts (binaries, CMake cache)
+    ├── cmake/              # CMake configuration files
+    ├── CMakeLists.txt      # Project CMake build configuration
+    ├── example/            # Example code for different robot models and features
+    │   ├── go2/            # Go2 robot examples
+    │   ├── g1/             # G1 robot examples
+    │   ├── h1/             # H1 robot examples
+    │   ├── a2/             # A2 robot examples
     │   └── ...
-    ├── include/         # Header files
-    │   └── unitree/     # Core SDK headers
-    ├── lib/             # Compiled libraries
-    ├── LICENSE          # License information
-    ├── README.md        # Original SDK README
-    └── thirdparty/      # Third-party dependencies
+    ├── include/            # Header files
+    │   └── unitree/        # Core SDK headers
+    ├── lib/                # Compiled libraries
+    ├── LICENSE             # License information
+    ├── README.md           # Original SDK README
+    └── thirdparty/         # Third-party dependencies
 ```
