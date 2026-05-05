@@ -9,7 +9,7 @@
  *         @code
  *         unitree::robot::ChannelFactory::Instance()->Init(0, "eth0");
  *         Go2LightController light;
- *         light.Blink(3, 0.8f, 0.5f);  // 闪烁3次，每次亮0.8s，间隔0.5s
+ *         light.Blink(3, 1.0f, 0.7f);  // 闪烁3次，亮度5持续1s，亮度0持续0.7s
  *         @endcode
  */
 #pragma once
@@ -75,29 +75,30 @@ public:
     }
 
     /**
-     * @brief 前灯闪烁指定次数
+     * @brief 前灯闪烁指定次数，直接通过 SetBrightness 调节亮度
      * @param times 闪烁次数
      * @param onDuration 每次灯光持续亮起的时间（秒）
      * @param offInterval 每次灯光熄灭的间隔时间（秒）
      */
     void Blink(int times, float onDuration, float offInterval)
     {
-        std::cout << ">>> 前灯闪烁开始: 共 " << times << " 次，每次亮 "
-                  << onDuration << "s，间隔 " << offInterval << "s" << std::endl;
+        int onLevel = 5;
+        int offLevel = 0;
+        std::cout << ">>> 前灯闪烁开始: 共 " << times << " 次，亮度 " << onLevel
+                  << " 持续 " << onDuration << "s，亮度 " << offLevel
+                  << " 持续 " << offInterval << "s" << std::endl;
         for (int i = 0; i < times; i++)
         {
-            std::cout << "第 " << (i + 1) << " 次闪烁: 亮" << std::endl;
-            SetBrightness(brightness_level_);
-            usleep(static_cast<useconds_t>(onDuration * 1000000));
-            if (i < times - 1)
+            std::cout << "第 " << (i + 1) << " 次闪烁: 亮度设为 " << onLevel << std::endl;
+            if (SetBrightness(onLevel) == 0)
             {
-                std::cout << "第 " << (i + 1) << " 次闪烁: 灭 (间隔)" << std::endl;
-                TurnOff();
-                usleep(static_cast<useconds_t>(offInterval * 1000000));
+                brightness_level_ = onLevel;
             }
+            usleep(static_cast<useconds_t>(onDuration * 1000000));
+            std::cout << "第 " << (i + 1) << " 次闪烁: 亮度设为 " << offLevel << std::endl;
+            SetBrightness(offLevel);
+            usleep(static_cast<useconds_t>(offInterval * 1000000));
         }
-        // 最后一次闪烁后关闭灯光
-        TurnOff();
         std::cout << ">>> 前灯闪烁结束" << std::endl;
     }
 
