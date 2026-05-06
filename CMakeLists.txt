@@ -93,3 +93,7 @@ target_link_libraries(go2_sport_switch unitree_sdk2 ddsc ddscxx Threads::Threads
 # Light controller executable (前灯控制，支持闪烁等灯效)
 add_executable(go2_light_controller src/go2_light_controller.cpp)
 target_link_libraries(go2_light_controller unitree_sdk2 ddsc ddscxx Threads::Threads)
+
+# Origin camera display executable (Go2 原生摄像头画面显示)
+add_executable(go2_video_display_origin src/go2_video_display_origin.cpp)
+target_link_libraries(go2_video_display_origin unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
