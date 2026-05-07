@@ -114,6 +114,17 @@ target_link_libraries(go2_yolo_identify
     Threads::Threads
 )
 
+# Go2 action executable (视觉动作联动程序，YOLO识别触发运动/灯光动作)
+add_executable(go2_action src/go2_action.cpp)
+target_link_libraries(go2_action
+    YOLODetector
+    unitree_sdk2
+    ddsc
+    ddscxx
+    ${OpenCV_LIBS}
+    Threads::Threads
+)
+
 # Diagnostic check executable (段错误诊断工具)
 add_executable(check src/check.cpp)
 target_link_libraries(check
