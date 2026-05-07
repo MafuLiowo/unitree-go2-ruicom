@@ -113,3 +113,14 @@ target_link_libraries(go2_yolo_identify
     ${OpenCV_LIBS}
     Threads::Threads
 )
+
+# Diagnostic check executable (段错误诊断工具)
+add_executable(check src/check.cpp)
+target_link_libraries(check
+    YOLODetector
+    unitree_sdk2
+    ddsc
+    ddscxx
+    ${OpenCV_LIBS}
+    Threads::Threads
+)

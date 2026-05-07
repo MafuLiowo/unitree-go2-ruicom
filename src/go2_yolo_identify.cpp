@@ -117,12 +117,12 @@ static void processFrame(cv::Mat& frame, YOLODetector& detector, int frame_idx) 
 
 /**
  * @brief 从 Go2 原生摄像头获取一帧图像
- * @param video_client Go2 视频客户端实例
+ * @param video_client Go2 视频客户端指针
  * @return cv::Mat 解码后的 BGR 图像，获取失败返回空 Mat
  */
-static cv::Mat getGo2Frame(unitree::robot::go2::VideoClient& video_client) {
+static cv::Mat getGo2Frame(unitree::robot::go2::VideoClient* video_client) {
     std::vector<uint8_t> image_sample;
-    int ret = video_client.GetImageSample(image_sample);
+    int ret = video_client->GetImageSample(image_sample);
     if (ret == 0 && !image_sample.empty()) {
         return cv::imdecode(cv::Mat(image_sample), cv::IMREAD_COLOR);
     }
@@ -193,9 +193,9 @@ int main(int argc, char** argv) {
     std::cout << "YOLO 检测器初始化完成 (CPU 后端)" << std::endl;
 
     // ======================================================================
-    // 3. 初始化 Go2 原生摄像头 (实时模式)
+    // 3. 初始化 Go2 原生摄像头 (实时模式) — 仅在摄像头模式下构造 VideoClient
     // ======================================================================
-    unitree::robot::go2::VideoClient video_client;
+    unitree::robot::go2::VideoClient* video_client = nullptr;
 
     if (useGo2Camera) {
         // 初始化 DDS 信道工厂 — 根据是否指定网络接口选择初始化方式
@@ -205,8 +205,9 @@ int main(int argc, char** argv) {
             unitree::robot::ChannelFactory::Instance()->Init(0);
         }
 
-        video_client.SetTimeout(1.0f);
-        video_client.Init();
+        video_client = new unitree::robot::go2::VideoClient();
+        video_client->SetTimeout(1.0f);
+        video_client->Init();
         std::cout << "Go2 原生摄像头已连接";
         if (!netInterface.empty()) {
             std::cout << " (网络接口: " << netInterface << ")";
@@ -295,6 +296,10 @@ int main(int argc, char** argv) {
     // 5. 清理资源
     // ======================================================================
     cv::destroyAllWindows();
+    if (video_client != nullptr) {
+        delete video_client;
+        video_client = nullptr;
+    }
     std::cout << "\n程序结束。共处理 " << frame_count << " 帧。" << std::endl;
 
     return 0;
