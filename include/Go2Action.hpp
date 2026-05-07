@@ -6,7 +6,7 @@
  *       本模块集成 Go2 原生摄像头、YOLO 检测器、SportSwitch 运动控制及
  *       LightController 灯光控制，实现"识别即执行"的视觉-动作映射。
  *       检测到对应类别后自动执行预设动作，动作间有冷却间隔避免重复触发。
- *       - "stretch" / "scretch" → 伸懒腰动作
+ *       - "stretch" → 伸懒腰动作
  *       - "hello" → 打招呼动作
  *       - "light" → 前灯闪烁 3 次
  */
@@ -31,7 +31,7 @@
  * 典型用法:
  * @code
  *   Go2Action::InitChannel("eth0");
- *   std::vector<std::string> class_names = {"scretch", "hello", "light", "one", "two"};
+ *   std::vector<std::string> class_names = {"stretch", "hello", "light", "one", "two"};
  *   Go2Action action("data/best.onnx", class_names);
  *   if (action.Initialize()) {
  *       action.Run();

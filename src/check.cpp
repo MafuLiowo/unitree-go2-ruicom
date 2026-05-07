@@ -76,7 +76,7 @@ static int testYoloOnly(const char* imgPath) {
 
     // 1a. 模型加载
     SAFE_BLOCK_BEGIN("1a. YOLODetector 构造函数 (模型加载)");
-    std::vector<std::string> class_names = {"scretch", "hello", "light", "one", "two"};
+    std::vector<std::string> class_names = {"stretch", "hello", "light", "one", "two"};
     std::string model_path = "/home/mafu/ai-unitree-go2-ruicom/data/best.onnx";
     YOLODetector detector(model_path, class_names, cv::Size(640, 640));
     SAFE_BLOCK_END("1a");
@@ -159,7 +159,7 @@ static int testFull(const char* imgPath) {
     std::cout << "\n========== 测试 3: 综合回归测试 ==========\n" << std::endl;
 
     // 3a. 模型初始化
-    std::vector<std::string> class_names = {"scretch", "hello", "light", "one", "two"};
+    std::vector<std::string> class_names = {"stretch", "hello", "light", "one", "two"};
     std::string model_path = "/home/mafu/ai-unitree-go2-ruicom/data/best.onnx";
 
     SAFE_BLOCK_BEGIN("3a. YOLODetector 构造 + 初始化");

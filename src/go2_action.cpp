@@ -8,7 +8,7 @@
  *             ./go2_action                       # 使用默认接口
  *       控制: [q/Esc] 退出  [s] 保存当前帧
  *       动作映射:
- *         "scretch"/"stretch" → 伸懒腰 (Go2SportSwitch::Stretch)
+ *         "stretch" → 伸懒腰 (Go2SportSwitch::Stretch)
  *         "hello"             → 打招呼 (Go2SportSwitch::Hello)
  *         "light"             → 前灯闪烁 3 次 (Go2LightController::Blink)
  */
@@ -27,10 +27,9 @@ constexpr int   INPUT_SIZE         = 640;
 
 // ==========================================================================
 // YOLO 类别名称（需与训练模型 class_names 顺序一致）
-// 注: 模型中 "scretch" 为拼写误差, 实际对应 stretch 类别
 // ==========================================================================
 static std::vector<std::string> kClassNames = {
-    "scretch",
+    "stretch",
     "hello",
     "light",
     "one",
@@ -240,7 +239,7 @@ void Go2Action::ExecuteLightBlink()
  * @param detections 当前帧的检测结果列表
  *
  * 映射规则:
- *   - "stretch" / "scretch"  → Stretch (伸懒腰)
+ *   - "stretch" → Stretch (伸懒腰)
  *   - "hello"                → Hello   (打招呼)
  *   - "light"                → 灯光闪烁 3 次
  *
@@ -253,14 +252,8 @@ void Go2Action::DispatchActions(const std::vector<Detection>& detections)
     for (const auto& det : detections) {
         std::string name = det.class_name;
 
-        // 类别名正则化: "scretch" 映射为 "stretch" 以匹配逻辑
-        std::string normName = name;
-        if (name == "scretch") {
-            normName = "stretch";
-        }
-
         // 冷却检查
-        if (IsInCooldown(normName)) {
+        if (IsInCooldown(name)) {
             continue;
         }
 
@@ -272,15 +265,15 @@ void Go2Action::DispatchActions(const std::vector<Detection>& detections)
         }
 
         // 动作分发
-        if (normName == "stretch") {
+        if (name == "stretch") {
             std::cout << "[Frame " << frameCount_ << "] 检测到 stretch → 执行伸懒腰" << std::endl;
             UpdateCooldown("stretch");
             ExecuteStretch();
-        } else if (normName == "hello") {
+        } else if (name == "hello") {
             std::cout << "[Frame " << frameCount_ << "] 检测到 hello → 执行打招呼" << std::endl;
             UpdateCooldown("hello");
             ExecuteHello();
-        } else if (normName == "light") {
+        } else if (name == "light") {
             std::cout << "[Frame " << frameCount_ << "] 检测到 light → 执行灯光闪烁 3 次" << std::endl;
             UpdateCooldown("light");
             ExecuteLightBlink();

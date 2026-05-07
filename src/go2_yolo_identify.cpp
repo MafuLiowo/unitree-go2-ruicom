@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     // 2. 初始化 YOLO 检测器 — 强制使用 CPU 后端 (ARM 平台最优)
     // ======================================================================
     std::vector<std::string> class_names = {
-        "scretch",
+        "stretch",
         "hello",
         "light",
         "one",
