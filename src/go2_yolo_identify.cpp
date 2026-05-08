@@ -13,7 +13,8 @@
  *       模型: 默认加载 data/best.onnx (ONNX CPU 推理 — 低算力 ARM 平台最优)
  *
  * @note 在 ARM 低算力平台上，ONNX + OpenCV DNN CPU 推理比 PyTorch .pt 加载更快、
- *       内存占用更低。本程序强制使用 CPU 后端以确保 ARM 平台兼容性。
+ *       内存占用更低。YOLODetector 内部自动选择最优 ARM CPU 后端
+ *       (OpenVINO → NEON FP16 → OpenCV CPU)，无需手动配置。
  *       实时视频源使用 Go2 原生摄像头 (VideoClient)，而非 RealSense 外接相机。
  */
 #include <unitree/robot/go2/video/video_client.hpp>
@@ -156,7 +157,7 @@ int main(int argc, char** argv) {
     }
 
     // ======================================================================
-    // 2. 初始化 YOLO 检测器 — 强制使用 CPU 后端 (ARM 平台最优)
+    // 2. 初始化 YOLO 检测器 — 自动选择最优 ARM CPU 后端
     // ======================================================================
     std::vector<std::string> class_names = {
         "stretch",
@@ -170,7 +171,7 @@ int main(int argc, char** argv) {
     std::cout << "Go2 YOLO 目标检测识别程序" << std::endl;
     std::cout << "========================================" << std::endl;
     std::cout << "模型文件: data/best.onnx" << std::endl;
-    std::cout << "推理后端: CPU (OpenCV DNN)" << std::endl;
+    std::cout << "推理后端: ARM CPU (自动最优选择)" << std::endl;
     std::cout << "输入尺寸: " << INPUT_SIZE << "x" << INPUT_SIZE << std::endl;
     std::cout << "置信度阈值: " << CONFIDENCE_THRESHOLD << std::endl;
     std::cout << "NMS 阈值: " << NMS_THRESHOLD << std::endl;
@@ -183,14 +184,14 @@ int main(int argc, char** argv) {
     std::cout << "========================================" << std::endl;
 
     // 默认加载 ONNX 模型 (data/best.onnx)
-    std::string model_path = "/home/mafu/ai-unitree-go2-ruicom/data/best.onnx";
+    std::string model_path = "/home/unitree/ai-unitree-go2-ruicom/data/best.onnx";
     YOLODetector detector(model_path, class_names, cv::Size(INPUT_SIZE, INPUT_SIZE));
 
-    if (!detector.initialize(false)) {  // false = 强制 CPU 后端
+    if (!detector.initialize()) {
         std::cerr << "错误: YOLO 检测器初始化失败" << std::endl;
         return -1;
     }
-    std::cout << "YOLO 检测器初始化完成 (CPU 后端)" << std::endl;
+    std::cout << "YOLO 检测器初始化完成" << std::endl;
 
     // ======================================================================
     // 3. 初始化 Go2 原生摄像头 (实时模式) — 仅在摄像头模式下构造 VideoClient

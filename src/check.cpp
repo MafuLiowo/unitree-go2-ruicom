@@ -81,9 +81,9 @@ static int testYoloOnly(const char* imgPath) {
     YOLODetector detector(model_path, class_names, cv::Size(640, 640));
     SAFE_BLOCK_END("1a");
 
-    // 1b. 初始化 (设置后端 + 获取输出层)
-    SAFE_BLOCK_BEGIN("1b. detector.initialize(CPU)");
-    if (!detector.initialize(false)) {
+    // 1b. 初始化 (ARM CPU 自动最优后端)
+    SAFE_BLOCK_BEGIN("1b. detector.initialize() ARM CPU 自动最优");
+    if (!detector.initialize()) {
         std::cerr << "初始化失败!" << std::endl;
         return 1;
     }
@@ -162,9 +162,9 @@ static int testFull(const char* imgPath) {
     std::vector<std::string> class_names = {"stretch", "hello", "light", "one", "two"};
     std::string model_path = "/home/mafu/ai-unitree-go2-ruicom/data/best.onnx";
 
-    SAFE_BLOCK_BEGIN("3a. YOLODetector 构造 + 初始化");
+    SAFE_BLOCK_BEGIN("3a. YOLODetector 构造 + 初始化 (ARM CPU 自动最优)");
     YOLODetector detector(model_path, class_names, cv::Size(640, 640));
-    if (!detector.initialize(false)) {
+    if (!detector.initialize()) {
         std::cerr << "初始化失败" << std::endl;
         return 1;
     }

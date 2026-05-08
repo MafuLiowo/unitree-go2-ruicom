@@ -100,14 +100,13 @@ Go2Action::~Go2Action()
 
 /**
  * @brief 初始化各子模块
- * @param useGPU 是否使用 GPU 推理
  * @return true 初始化成功
  */
-bool Go2Action::Initialize(bool useGPU)
+bool Go2Action::Initialize()
 {
-    // 1. YOLO 检测器
+    // 1. YOLO 检测器 (自动选择 ARM CPU 最优后端)
     detector_ = new YOLODetector(modelPath_, classNames_, inputSize_);
-    if (!detector_->initialize(useGPU)) {
+    if (!detector_->initialize()) {
         std::cerr << "错误: YOLO 检测器初始化失败" << std::endl;
         return false;
     }
@@ -396,10 +395,10 @@ int main(int argc, char** argv)
     Go2Action::InitChannel(netInterface);
 
     // 创建视觉动作联动实例
-    std::string modelPath = "/home/mafu/ai-unitree-go2-ruicom/data/best.onnx";
+    std::string modelPath = "/home/unitree/ai-unitree-go2-ruicom/data/best.onnx";
     Go2Action action(modelPath, kClassNames, CONFIDENCE_THRESHOLD, cv::Size(INPUT_SIZE, INPUT_SIZE));
 
-    if (!action.Initialize(false)) {
+    if (!action.Initialize()) {
         std::cerr << "错误: Go2Action 初始化失败" << std::endl;
         return -1;
     }

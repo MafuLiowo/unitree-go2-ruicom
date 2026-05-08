@@ -21,8 +21,12 @@ struct Detection {
 /**
  * @brief 基于 YOLOv8 ONNX 模型的目标检测器，使用 OpenCV DNN 后端
  *
- * 在低算力 ARM 平台 (如 Go2 机器狗) 上，ONNX + CPU 推理比 PyTorch .pt 更快，
- * 因为避免了 PyTorch 运行时的额外开销。
+ * 专为 Go2 机器狗 ARM CPU 平台优化：自动检测可用后端并优先选择推理速度
+ * 最快的方案，无需手动指定 GPU/CUDA。
+ *
+ * 后端选择优先级: OpenVINO (DNN_BACKEND_INFERENCE_ENGINE)
+ *               → ARM NEON FP16 (DNN_TARGET_CPU_FP16)
+ *               → OpenCV CPU (DNN_BACKEND_OPENCV)
  */
 class YOLODetector {
 public:
@@ -39,11 +43,17 @@ public:
     ~YOLODetector();
 
     /**
-     * @brief 初始化检测器 — 设置推理后端并获取输出层名称
-     * @param use_gpu 是否尝试使用 GPU 加速（CUDA），不可用时自动回退 CPU
+     * @brief 初始化检测器 — 自动选择最优 ARM CPU 推理后端
      * @return true 初始化成功，false 初始化失败
+     *
+     * 后端选择策略:
+     * 1. 尝试 OpenVINO (DNN_BACKEND_INFERENCE_ENGINE + DNN_TARGET_CPU)
+     * 2. 回退 ARM NEON FP16 (DNN_BACKEND_OPENCV + DNN_TARGET_CPU_FP16)
+     * 3. 最终回退标准 OpenCV CPU (DNN_BACKEND_OPENCV + DNN_TARGET_CPU)
+     *
+     * 同时自动设置 OpenCV 线程数为 CPU 核心数以充分利用多核 ARM 处理器。
      */
-    bool initialize(bool use_gpu = false);
+    bool initialize();
 
     /**
      * @brief 对单帧图像执行目标检测
@@ -107,5 +117,6 @@ private:
     cv::Size input_size_;                   ///< 模型输入尺寸
     bool initialized_;                      ///< 初始化标志
     std::vector<std::string> output_names_; ///< 输出层名称列表
-    bool use_gpu_;                          ///< GPU 使用标志
+    std::string backend_name_;              ///< 当前使用的推理后端名称 (用于日志)
+    int num_threads_;                       ///< CPU 推理线程数
 };

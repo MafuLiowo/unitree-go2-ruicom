@@ -66,10 +66,9 @@ public:
 
     /**
      * @brief 初始化各子模块（YOLO检测器、摄像头、运动控制、灯光控制）
-     * @param useGPU 是否使用GPU推理，默认false（ARM平台推荐CPU）
      * @return true 初始化成功
      */
-    bool Initialize(bool useGPU = false);
+    bool Initialize();
 
     /**
      * @brief 主循环入口：摄像头实时采集 → YOLO检测 → 动作分发 → 画面显示
