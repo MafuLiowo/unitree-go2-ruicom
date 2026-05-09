@@ -98,6 +98,10 @@ target_link_libraries(go2_light_controller unitree_sdk2 ddsc ddscxx Threads::Thr
 add_executable(go2_video_display_origin src/go2_video_display_origin.cpp)
 target_link_libraries(go2_video_display_origin unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
 
+# Photo capture executable (Go2 原生相机拍照，保存到 ./photo/IMG_xxx.jpg)
+add_executable(go2_photo src/go2_photo.cpp)
+target_link_libraries(go2_photo unitree_sdk2 ddsc ddscxx ${OpenCV_LIBS} Threads::Threads)
+
 # YOLO detector library (ONNX 模型加载、推理、后处理)
 add_library(YOLODetector src/YOLODetector.cpp)
 target_include_directories(YOLODetector PUBLIC ${CMAKE_SOURCE_DIR}/include)

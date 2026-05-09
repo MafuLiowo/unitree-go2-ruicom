@@ -68,6 +68,7 @@ float getLineCenter(const cv::Mat& binary);
 │   ├── go2_seeking_way.cpp       # 视觉寻路主程序，基于连通域分析的路径跟踪
 │   ├── go2_sport_switch.cpp      # 高层运动控制交互程序，支持 Stretch/Hello/StopMove/FrontJump/WalkStair
 │   ├── go2_light_controller.cpp  # 灯光控制客户端，控制 Go2 机器人 LED 灯效
+│   ├── go2_photo.cpp              # Go2 原生相机拍照程序，按 s 保存图片到 ./photo/
 │   └── go2_images_identify.cpp   # 图像标识识别程序（待实现）
 
 └── unitree_sdk2/           # Unitree SDK2 库及头文件
