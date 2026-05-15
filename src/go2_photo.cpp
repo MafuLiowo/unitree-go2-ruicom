@@ -1,12 +1,12 @@
 /**
  * @file go2_photo.cpp
- * @brief Go2 原生相机拍照程序，实时显示摄像头画面，按 s 键保存图片
+ * @brief Go2 原生相机拍照程序，实时显示摄像头画面，通过终端命令控制
  *
  * @par 使用说明
  *       go2_photo [network_interface]
  *       示例: ./go2_photo              # 默认网口
  *             ./go2_photo eth0         # 指定以太网接口
- *       控制: [s] 保存图片到 ./photo/ 目录  [q/Esc] 退出
+ *       控制: 终端输入 s 保存图片到 ./photo/ 目录，输入 q 退出
  *       图片格式: IMG_xxx.jpg (自动检测已有编号，不覆盖)
  */
 #include <unitree/robot/go2/video/video_client.hpp>
@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <poll.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -62,14 +64,29 @@ int main(int argc, char** argv) {
     video_client.Init();
 
     std::cout << "Go2 原生相机已连接" << std::endl;
-    std::cout << "控制: [s] 保存图片  [q/Esc] 退出" << std::endl;
+    std::cout << "控制: 终端输入 s 保存图片  q 退出" << std::endl;
 
     cv::namedWindow("Go2 Camera", cv::WINDOW_AUTOSIZE);
 
     std::vector<uint8_t> image_sample;
     int save_counter = 0;
+    bool save_requested = false;
 
     while (true) {
+        struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
+        if (poll(&pfd, 1, 0) > 0) {
+            std::string line;
+            std::getline(std::cin, line);
+            if (!line.empty()) {
+                char cmd = line[0];
+                if (cmd == 'q' || cmd == 'Q') {
+                    break;
+                } else if (cmd == 's' || cmd == 'S') {
+                    save_requested = true;
+                }
+            }
+        }
+
         int ret = video_client.GetImageSample(image_sample);
 
         if (ret == 0 && !image_sample.empty()) {
@@ -78,11 +95,9 @@ int main(int argc, char** argv) {
 
             if (!frame.empty()) {
                 cv::imshow("Go2 Camera", frame);
+                cv::waitKey(1);
 
-                char key = (char)cv::waitKey(1);
-                if (key == 'q' || key == 27) {
-                    break;
-                } else if (key == 's' || key == 'S') {
+                if (save_requested) {
                     int next_num = getNextPhotoNumber();
                     std::ostringstream oss;
                     oss << "./photo/IMG_" << std::setw(3) << std::setfill('0')
@@ -95,10 +110,11 @@ int main(int argc, char** argv) {
                     } else {
                         std::cerr << "!!! 保存失败: " << filename << std::endl;
                     }
+                    save_requested = false;
                 }
             }
         } else {
-            if ((char)cv::waitKey(1) == 'q') break;
+            cv::waitKey(1);
         }
     }
 
