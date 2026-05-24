@@ -57,19 +57,30 @@ float getLineCenter(const cv::Mat& binary);
 ├── build/                  # 编译构建目录（通常在 .gitignore 中忽略）
 ├── docs/                   # 详细模块文档及使用说明目录
 │   ├── LineProcessor.md    # LineProcessor 模块的使用示例与参数配置
-│   └── safety_detection.md # 安全检测模块文档
+│   ├── safety_detection.md # 安全检测模块文档
+│   └── go2_slam.md         # Go2 SLAM 建图与 Nav2 导航使用说明
 ├── include/                # 头文件目录
-│   ├── Go2SportSwitch.hpp  # Go2 高层运动控制封装，提供 Stretch/Hello/StopMove/FrontJump/WalkStair
-│   └── ImageProcessor.hpp  # 图像处理模块接口（连通域分析、路径检测）
+│   ├── Go2SportSwitch.hpp      # Go2 高层运动控制封装，提供 Stretch/Hello/StopMove/FrontJump/WalkStair
+│   ├── Go2LightController.hpp  # Go2 灯光控制封装，支持常亮、闪烁等灯效
+│   ├── Go2Action.hpp           # Go2 视觉动作联动模块接口
+│   ├── LineProcessor.hpp       # 图像处理模块接口（连通域分析、路径检测）
+│   ├── YOLODetector.hpp        # YOLO 目标检测模块接口（ONNX 推理）
+│   └── go2_motion_bridge.hpp   # Go2 运动控制与传感器数据桥接 C API，供 ROS2 节点调用
 ├── src/                    # 源文件目录
-│   ├── go2_video_display.cpp     # RealSense 实时画面显示程序
-│   ├── go2_process_image.cpp     # HSV 颜色识别与 V 通道反二值化程序
-│   ├── go2_process_images.cpp    # 图像处理模块实现（连通域分析/路径检测）
-│   ├── go2_seeking_way.cpp       # 视觉寻路主程序，基于连通域分析的路径跟踪
-│   ├── go2_sport_switch.cpp      # 高层运动控制交互程序，支持 Stretch/Hello/StopMove/FrontJump/WalkStair
-│   ├── go2_light_controller.cpp  # 灯光控制客户端，控制 Go2 机器人 LED 灯效
-│   ├── go2_photo.cpp              # Go2 原生相机拍照程序，按 s 保存图片到 ./photo/
-│   └── go2_images_identify.cpp   # 图像标识识别程序（待实现）
+│   ├── go2_video_display.cpp        # RealSense 实时画面显示程序
+│   ├── go2_video_display_origin.cpp # Go2 原生摄像头实时画面显示程序
+│   ├── go2_process_image.cpp        # HSV 颜色识别与 V 通道反二值化程序
+│   ├── go2_sport_switch.cpp         # 高层运动控制交互程序，支持 Stretch/Hello/StopMove/FrontJump
+│   ├── go2_walk_stair.cpp           # 楼梯行走控制程序
+│   ├── go2_light_controller.cpp     # 灯光控制客户端，控制 Go2 机器人 LED 灯效
+│   ├── go2_photo.cpp                # Go2 原生相机拍照程序，按 s 保存图片到 ./photo/
+│   ├── go2_walking.cpp              # 视觉巡线行走程序，基于 RealSense 二值化进行路径检测与 Go2 运动控制
+│   ├── go2_jump.cpp                 # RealSense 深度横棒检测 → FrontJump 前跳程序
+│   ├── go2_yolo_identify.cpp        # YOLO 目标检测识别程序，使用 Go2 原生摄像头
+│   ├── go2_action.cpp               # 视觉动作联动程序，YOLO 识别触发运动/灯光动作
+│   ├── YOLODetector.cpp             # YOLO 目标检测模块实现（ONNX 模型加载与推理）
+│   ├── go2_motion_bridge.cpp        # Go2 运动控制与传感器数据桥接实现（DDS 通信）
+│   └── go2_slam.cpp                 # SLAM 建图与 Nav2 导航桥接程序，ASCII 实时地图显示
 
 └── unitree_sdk2/           # Unitree SDK2 库及头文件
     ├── build/              # Build artifacts (binaries, CMake cache)
