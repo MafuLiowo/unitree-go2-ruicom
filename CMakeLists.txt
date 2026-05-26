@@ -11,6 +11,10 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
+# 宇树 SDK 新版 DDS (CycloneDDS 0.10.5) 路径，优先级高于系统安装版本
+set(UNITREE_DDS_LIB_DIR /home/mafu/unitree_ros2/cyclonedds_ws/install/cyclonedds/lib)
+set(UNITREE_DDS_INCLUDE_DIR /home/mafu/unitree_ros2/cyclonedds_ws/install/cyclonedds/include)
+
 # Try to find unitree_sdk2 in system paths
 find_library(UNITREE_SDK_LIB unitree_sdk2
   PATHS
@@ -19,19 +23,21 @@ find_library(UNITREE_SDK_LIB unitree_sdk2
     ${CMAKE_SOURCE_DIR}/unitree_sdk2/lib/${CMAKE_SYSTEM_PROCESSOR}
 )
 
-# Try to find DDS libraries
+# Try to find DDS libraries — 优先使用宇树 SDK 附带的新版 DDS (CycloneDDS 0.10.5)
 find_library(DDSC_LIB ddsc
   PATHS
+    ${UNITREE_DDS_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR}
     /usr/local/lib
     /usr/lib
-    ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR}
 )
 
 find_library(DDSCXX_LIB ddscxx
   PATHS
+    ${UNITREE_DDS_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR}
     /usr/local/lib
     /usr/lib
-    ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR}
 )
 
 find_package(Threads REQUIRED)
@@ -60,10 +66,13 @@ else()
 endif()
 
 # ---- Unitree SDK2 头文件路径（供非 ROS2 目标使用） ----
+# 新版 DDS (CycloneDDS 0.10.5) 头文件优先
 set(UNITREE_INCLUDES
     ${CMAKE_SOURCE_DIR}/unitree_sdk2/include
     ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/include
     ${CMAKE_SOURCE_DIR}/unitree_sdk2/thirdparty/include/ddscxx
+    ${UNITREE_DDS_INCLUDE_DIR}
+    ${UNITREE_DDS_INCLUDE_DIR}/ddsc
     /usr/local/include/ddscxx
     /usr/local/include/ddsc
     /usr/include/ddscxx
@@ -208,6 +217,7 @@ find_package(tf2_ros REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 
 # SLAM + Nav2 桥接节点（仅含 ROS2 + motion bridge，不含 Unitree DDS 头文件）
 add_executable(go2_slam src/go2_slam.cpp)
@@ -223,6 +233,49 @@ target_include_directories(go2_slam PRIVATE
     ${builtin_interfaces_INCLUDE_DIRS}
 )
 target_link_libraries(go2_slam
+    go2_motion_bridge
+    unitree_sdk2
+    ddsc
+    ddscxx
+    Threads::Threads
+    ${rclcpp_LIBRARIES}
+    ${sensor_msgs_LIBRARIES}
+    ${nav_msgs_LIBRARIES}
+    ${geometry_msgs_LIBRARIES}
+    ${tf2_ros_LIBRARIES}
+    ${nav2_msgs_LIBRARIES}
+    ${std_msgs_LIBRARIES}
+    ${builtin_interfaces_LIBRARIES}
+)
+
+# ---- NavFn 全局规划器库 ----
+add_library(NavFnPlanner src/NavFnPlanner.cpp)
+target_include_directories(NavFnPlanner PUBLIC ${PROJECT_INCLUDES})
+
+# ---- DWB 局部规划器库 ----
+add_library(DWBPlanner src/DWBPlanner.cpp)
+target_include_directories(DWBPlanner PUBLIC ${PROJECT_INCLUDES})
+target_link_libraries(DWBPlanner PUBLIC NavFnPlanner)
+
+# ---- 地图加载器库 ----
+add_library(MapLoader src/MapLoader.cpp)
+target_include_directories(MapLoader PUBLIC ${PROJECT_INCLUDES})
+
+# ---- Go2 自主导航节点 (NavFn + DWB + AMCL) ----
+add_executable(go2_navigation "src/ go2_navigation.cpp")
+target_include_directories(go2_navigation PRIVATE
+    ${PROJECT_INCLUDES}
+    ${rclcpp_INCLUDE_DIRS}
+    ${sensor_msgs_INCLUDE_DIRS}
+    ${nav_msgs_INCLUDE_DIRS}
+    ${geometry_msgs_INCLUDE_DIRS}
+    ${tf2_ros_INCLUDE_DIRS}
+    ${std_msgs_INCLUDE_DIRS}
+    ${builtin_interfaces_INCLUDE_DIRS}
+)
+target_link_libraries(go2_navigation
+    NavFnPlanner
+    DWBPlanner
     go2_motion_bridge
     unitree_sdk2
     ddsc
