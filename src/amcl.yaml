@@ -1,0 +1,11 @@
+amcl:
+  ros__parameters:
+    
+    set_initial_pose: true
+    always_reset_initial_pose: true
+    
+    initial_pose:
+      x: 0.833904
+      y: 0.363903
+      z: 0.0
+      yaw: 0.497863

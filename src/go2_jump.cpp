@@ -1,341 +1,469 @@
 /**
  * @file go2_jump.cpp
- * @brief 深度相机横棒检测与前跳程序，通过 RealSense 深度相机持续检测水平横棒，检测到后触发 Go2 前跳
+ * @brief Go2 横棒检测与越障程序，通过 PCL 点云库识别前方横棒并执行前跳越障
  *
  * @par 使用说明
  *       go2_jump <network_interface>
  *       示例: ./go2_jump eth0
- *       说明: 程序自动连接 RealSense 深度相机，持续分析深度图中是否存在水平横棒（深度值显著异于
- *             背景的横向带状区域），检测到后调用 Go2 FrontJump 前跳一次并退出。
- *       控制: [q/Esc] 手动退出
+ *
+ *       说明: 本程序订阅 /utlidar/cloud_base 点云话题，使用 PCL 库进行横棒识别，
+ *             检测到横棒后自动行走至棒前，到达合适距离后执行前跳（FrontJump）越障。
+ *
+ *       控制:
+ *             q     - 退出程序
+ *             Space - 暂停/恢复运动
  */
-#include <librealsense2/rs.hpp>
-#include <opencv2/opencv.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/common/common.h>
+#include <pcl_conversions/pcl_conversions.h>
+
+#include "go2_motion_bridge.hpp"
+
 #include <iostream>
-#include <vector>
-#include <algorithm>
+#include <string>
 #include <cmath>
-#include "Go2SportSwitch.hpp"
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <atomic>
 
-/** @brief 深度图水平分割的条带高度（像素） */
-constexpr int STRIP_HEIGHT = 20;
+// ==========================================================================
+// 横棒检测参数（可微调）
+// ==========================================================================
+constexpr float ROI_X_MIN          = 0.2f;     ///< 前方最近检测距离 (m)
+constexpr float ROI_X_MAX          = 3.0f;     ///< 前方最远检测距离 (m)
+constexpr float ROI_Y_RANGE        = 2.0f;     ///< 左右检测范围 (±m)
+constexpr float ROI_Z_MIN          = 0.02f;    ///< 横棒最低高度 (m)
+constexpr float ROI_Z_MAX          = 0.10f;    ///< 横棒最高高度 (m)
+constexpr float VOXEL_LEAF_SIZE    = 0.02f;    ///< 体素降采样叶子大小 (m)
+constexpr float RANSAC_THRESHOLD   = 0.03f;    ///< RANSAC 直线拟合距离阈值 (m)
+constexpr int   RANSAC_MAX_ITER    = 1000;     ///< RANSAC 最大迭代次数
+constexpr int   MIN_LINE_INLIERS   = 15;       ///< 有效横棒最少内点数
+constexpr float LINE_HORIZONTAL_Z  = 0.15f;    ///< 直线方向 Z 分量阈值（小于此值认为水平）
 
-/** @brief 横棒深度与背景深度的最小差异阈值（米） */
-constexpr float DEPTH_DIFF_THRESHOLD = 0.3f;
+// ==========================================================================
+// 运动控制参数（可微调）
+// ==========================================================================
+constexpr float JUMP_DISTANCE      = 0.40f;    ///< 起跳距离 (m)，到达此距离后执行前跳
+constexpr float APPROACH_SPEED     = 0.20f;    ///< 接近速度 (m/s)
+constexpr float APPROACH_SPEED_MIN = 0.08f;    ///< 最小接近速度 (m/s)
+constexpr float ANGULAR_KP         = 0.6f;     ///< 角速度比例系数 (rad/s per meter offset)
+constexpr float MAX_ANGULAR_SPEED  = 0.8f;     ///< 最大角速度 (rad/s)
+constexpr float DISTANCE_SLOWDOWN  = 1.0f;     ///< 减速起始距离 (m)，距离小于此值时线性降低速度
 
-/** @brief 横棒条带的最小宽度占比（有效像素占全宽的比例） */
-constexpr float MIN_WIDTH_RATIO = 0.4f;
+// ==========================================================================
+// 状态机枚举
+// ==========================================================================
+enum class JumpState {
+    SEARCHING,   ///< 搜索横棒中，机器人站立不动
+    APPROACHING, ///< 已检测到横棒，正在接近
+    JUMPING,     ///< 到达起跳距离，执行前跳
+    DONE         ///< 越障完成
+};
 
-/** @brief 横棒条带的最大高度（条带数），防止将大面积物体误判为横棒 */
-constexpr int MAX_BAR_STRIPS = 4;
+// ==========================================================================
+// 横棒检测结果
+// ==========================================================================
+struct StickResult
+{
+    bool   detected     = false; ///< 是否检测到横棒
+    float  distance     = 0.0f;  ///< 横棒最近点到机器人前方距离 (m)
+    float  centerY      = 0.0f;  ///< 横棒中心 Y 偏移 (m)，正=右侧
+    float  centerZ      = 0.0f;  ///< 横棒中心高度 (m)
+    int    inlierCount  = 0;     ///< RANSAC 内点数
+};
 
-/** @brief 检测到横棒后的连续确认帧数，防止误触发 */
-constexpr int CONFIRM_FRAMES = 3;
+// ==========================================================================
+// 全局状态（线程安全）
+// ==========================================================================
+static std::mutex g_stateMutex;
+static JumpState   g_state    = JumpState::SEARCHING;
+static StickResult g_lastStick;
+static std::atomic<bool> g_running{true};
+static std::atomic<bool> g_paused{false};
 
 /**
- * @brief 获取当前时间戳字符串
- * @return std::string 格式为 "YYYYMMDD_HHMMSS" 的时间戳
- */
-std::string getCurrentTimestamp()
-{
-    auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d_%H%M%S");
-    return oss.str();
-}
-
-/**
- * @brief 检测深度图中的水平横棒
+ * @brief Go2 横棒跳跃节点类
  *
- * 将深度图按行等分为若干水平条带，计算每个条带的中位深度值，
- * 再找出与背景深度差异显著且横跨画面大部分宽度的窄条带区域。
- *
- * @param depthMat 16位原始深度图像（CV_16UC1）
- * @param depthScale 深度缩放因子，将原始uint16值转换为米
- * @param barTopRow 输出参数，横棒上边界行号
- * @param barBottomRow 输出参数，横棒下边界行号
- * @return true 检测到水平横棒
+ * 订阅 /utlidar/cloud_base 点云话题，使用 PCL 库进行横棒识别，
+ * 通过定时器驱动状态机控制机器狗接近横棒并执行前跳越障。
  */
-bool detectHorizontalBar(const cv::Mat& depthMat, float depthScale,
-                         int& barTopRow, int& barBottomRow)
+class Go2JumpNode : public rclcpp::Node
 {
-    int height = depthMat.rows;
-    int width = depthMat.cols;
-    int numStrips = height / STRIP_HEIGHT;
+public:
+    /**
+     * @brief 构造函数
+     */
+    Go2JumpNode()
+        : Node("go2_jump_node")
+    {
+        // ---- 点云订阅器 ----
+        cloudSub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            "/utlidar/cloud_base", rclcpp::SensorDataQoS(),
+            std::bind(&Go2JumpNode::cloudCallback, this, std::placeholders::_1));
 
-    if (numStrips < 4) {
-        return false;
+        // ---- 控制定时器 (30Hz) ----
+        controlTimer_ = this->create_wall_timer(
+            std::chrono::milliseconds(33),
+            std::bind(&Go2JumpNode::controlLoop, this));
+
+        RCLCPP_INFO(this->get_logger(), "Go2 横棒跳跃节点已就绪");
     }
 
-    // 计算每个条带的中位深度和有效像素占比
-    struct StripInfo {
-        float medianDepth = 0.0f;
-        float validRatio = 0.0f;   // 有效像素占全宽的比例
-        int startRow = 0;
-        int endRow = 0;
-    };
+private:
+    /**
+     * @brief 点云回调：将 ROS2 PointCloud2 转换为 PCL 点云并检测横棒
+     * @param msg ROS2 PointCloud2 消息
+     */
+    void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
+    {
+        // 仅在搜索和接近状态下处理点云
+        JumpState currentState;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            currentState = g_state;
+        }
+        if (currentState != JumpState::SEARCHING && currentState != JumpState::APPROACHING)
+            return;
 
-    std::vector<StripInfo> strips(numStrips);
-    std::vector<uint16_t> sampleBuffer;  // 复用缓冲区
-    sampleBuffer.reserve(width * STRIP_HEIGHT);
+        // 转换为 PCL 点云
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::fromROSMsg(*msg, *cloud);
 
-    for (int s = 0; s < numStrips; s++) {
-        int r0 = s * STRIP_HEIGHT;
-        int r1 = r0 + STRIP_HEIGHT;
-        strips[s].startRow = r0;
-        strips[s].endRow = r1;
+        if (cloud->empty()) return;
 
-        sampleBuffer.clear();
-        for (int r = r0; r < r1; r++) {
-            const uint16_t* rowPtr = depthMat.ptr<uint16_t>(r);
-            for (int c = 0; c < width; c++) {
-                if (rowPtr[c] > 0) {
-                    sampleBuffer.push_back(rowPtr[c]);
+        StickResult result = detectStick(cloud);
+
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_lastStick = result;
+
+        if (result.detected && g_state == JumpState::SEARCHING) {
+            g_state = JumpState::APPROACHING;
+            RCLCPP_INFO(this->get_logger(),
+                "检测到横棒! 距离: %.2fm, 偏移: %.2fm, 高度: %.2fm",
+                result.distance, result.centerY, result.centerZ);
+        }
+    }
+
+    /**
+     * @brief 控制循环：根据状态机驱动机器人运动
+     */
+    void controlLoop()
+    {
+        if (g_paused) return;
+
+        JumpState currentState;
+        StickResult stick;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            currentState = g_state;
+            stick = g_lastStick;
+        }
+
+        switch (currentState) {
+        case JumpState::SEARCHING:
+            // 搜索中，机器人原地待命
+            break;
+
+        case JumpState::APPROACHING:
+            if (!stick.detected) {
+                // 丢失横棒信号，减速等待重新检测
+                go2_motion_move(0.0f, 0.0f, 0.0f);
+                RCLCPP_WARN_THROTTLE(this->get_logger(),
+                    *this->get_clock(), 1000,
+                    "横棒信号丢失，等待重新检测...");
+                break;
+            }
+
+            if (stick.distance <= JUMP_DISTANCE) {
+                // 到达起跳距离
+                go2_motion_stop();
+                RCLCPP_INFO(this->get_logger(),
+                    "到达起跳距离 (%.2fm)，准备前跳!", stick.distance);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+                // 执行前跳
+                go2_motion_front_jump();
+                RCLCPP_INFO(this->get_logger(), "前跳指令已发出!");
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+                go2_motion_stop();
+                {
+                    std::lock_guard<std::mutex> lock(g_stateMutex);
+                    g_state = JumpState::DONE;
                 }
-            }
-        }
-
-        strips[s].validRatio = static_cast<float>(sampleBuffer.size())
-                               / static_cast<float>(width * STRIP_HEIGHT);
-
-        if (sampleBuffer.size() > width * 0.1f) {
-            std::sort(sampleBuffer.begin(), sampleBuffer.end());
-            strips[s].medianDepth = static_cast<float>(
-                sampleBuffer[sampleBuffer.size() / 2]) * depthScale;
-        }
-    }
-
-    // 计算背景深度：取有效条带中位深度的中位数（排除极端值）
-    std::vector<float> validMedians;
-    for (const auto& strip : strips) {
-        if (strip.validRatio > 0.3f && strip.medianDepth > 0.1f) {
-            validMedians.push_back(strip.medianDepth);
-        }
-    }
-
-    if (validMedians.size() < 4) {
-        return false;
-    }
-
-    std::sort(validMedians.begin(), validMedians.end());
-    float backgroundDepth = validMedians[validMedians.size() / 2];
-
-    // 扫描条带，寻找与背景深度差异显著的连续窄区域
-    int barStart = -1;
-    int barEnd = -1;
-    bool inBarRegion = false;
-
-    for (int s = 0; s < numStrips; s++) {
-        if (strips[s].validRatio < MIN_WIDTH_RATIO) {
-            // 有效像素太少，视为无效条带，中断当前候选区域
-            if (inBarRegion) {
-                barEnd = s - 1;
+                RCLCPP_INFO(this->get_logger(), "越障完成!");
                 break;
             }
-            continue;
+
+            // 计算运动指令
+            {
+                float vx   = computeApproachSpeed(stick.distance);
+                float vyaw = computeAngularCorrection(stick.centerY);
+
+                go2_motion_move(vx, 0.0f, vyaw);
+
+                RCLCPP_INFO_THROTTLE(this->get_logger(),
+                    *this->get_clock(), 500,
+                    "接近横棒: 距离=%.2fm 偏移=%.2fm | vx=%.2f vyaw=%.2f",
+                    stick.distance, stick.centerY, vx, vyaw);
+            }
+            break;
+
+        case JumpState::JUMPING:
+        case JumpState::DONE:
+            // 越障完成，保持不动
+            go2_motion_stop();
+            break;
+        }
+    }
+
+    /**
+     * @brief 使用 PCL 检测点云中的横棒
+     *
+     * 处理流程：
+     *   1. PassThrough 滤波器截取 ROI 区域
+     *   2. VoxelGrid 降采样加速处理
+     *   3. StatisticalOutlierRemoval 去除离群点
+     *   4. RANSAC 直线分割，检查直线是否近似水平
+     *
+     * @param cloud 输入点云
+     * @return StickResult 检测结果
+     */
+    StickResult detectStick(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
+    {
+        StickResult result;
+
+        // ---- 1. PassThrough 滤波器 ----
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloudFiltered(
+            new pcl::PointCloud<pcl::PointXYZ>());
+
+        // X 方向（前方）
+        pcl::PassThrough<pcl::PointXYZ> passX;
+        passX.setInputCloud(cloud);
+        passX.setFilterFieldName("x");
+        passX.setFilterLimits(ROI_X_MIN, ROI_X_MAX);
+        passX.filter(*cloudFiltered);
+
+        // Y 方向（左右）
+        pcl::PassThrough<pcl::PointXYZ> passY;
+        passY.setInputCloud(cloudFiltered);
+        passY.setFilterFieldName("y");
+        passY.setFilterLimits(-ROI_Y_RANGE, ROI_Y_RANGE);
+        passY.filter(*cloudFiltered);
+
+        // Z 方向（高度）
+        pcl::PassThrough<pcl::PointXYZ> passZ;
+        passZ.setInputCloud(cloudFiltered);
+        passZ.setFilterFieldName("z");
+        passZ.setFilterLimits(ROI_Z_MIN, ROI_Z_MAX);
+        passZ.filter(*cloudFiltered);
+
+        if (cloudFiltered->size() < static_cast<size_t>(MIN_LINE_INLIERS))
+            return result;
+
+        // ---- 2. VoxelGrid 降采样 ----
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloudDownsampled(
+            new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::VoxelGrid<pcl::PointXYZ> voxel;
+        voxel.setInputCloud(cloudFiltered);
+        voxel.setLeafSize(VOXEL_LEAF_SIZE, VOXEL_LEAF_SIZE, VOXEL_LEAF_SIZE);
+        voxel.filter(*cloudDownsampled);
+
+        if (cloudDownsampled->size() < static_cast<size_t>(MIN_LINE_INLIERS))
+            return result;
+
+        // ---- 3. 统计离群点去除 ----
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloudClean(
+            new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+        sor.setInputCloud(cloudDownsampled);
+        sor.setMeanK(10);
+        sor.setStddevMulThresh(1.5);
+        sor.filter(*cloudClean);
+
+        if (cloudClean->size() < static_cast<size_t>(MIN_LINE_INLIERS))
+            return result;
+
+        // ---- 4. RANSAC 直线分割 ----
+        pcl::SACSegmentation<pcl::PointXYZ> seg;
+        seg.setOptimizeCoefficients(true);
+        seg.setModelType(pcl::SACMODEL_LINE);
+        seg.setMethodType(pcl::SAC_RANSAC);
+        seg.setDistanceThreshold(RANSAC_THRESHOLD);
+        seg.setMaxIterations(RANSAC_MAX_ITER);
+
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+        seg.setInputCloud(cloudClean);
+        seg.segment(*inliers, *coefficients);
+
+        if (inliers->indices.empty() ||
+            static_cast<int>(inliers->indices.size()) < MIN_LINE_INLIERS) {
+            return result;
         }
 
-        bool isAnomaly = std::abs(strips[s].medianDepth - backgroundDepth)
-                         > DEPTH_DIFF_THRESHOLD;
+        // ---- 5. 检查直线是否近似水平 ----
+        // coefficients: [x0, y0, z0, dx, dy, dz]
+        float dz = std::fabs(coefficients->values[5]);
+        float norm = std::sqrt(
+            coefficients->values[3] * coefficients->values[3] +
+            coefficients->values[4] * coefficients->values[4] +
+            coefficients->values[5] * coefficients->values[5]);
+        float dz_norm = (norm > 1e-6f) ? (dz / norm) : 1.0f;
 
-        if (isAnomaly && strips[s].medianDepth > 0.1f) {
-            if (!inBarRegion) {
-                barStart = s;
-                inBarRegion = true;
-            }
-        } else {
-            if (inBarRegion) {
-                barEnd = s - 1;
-                break;
-            }
+        if (dz_norm > LINE_HORIZONTAL_Z)
+            return result;
+
+        // ---- 6. 计算横棒位置信息 ----
+        float sumX = 0.0f, sumY = 0.0f, sumZ = 0.0f;
+        float minX = std::numeric_limits<float>::max();
+        for (int idx : inliers->indices) {
+            const auto& pt = cloudClean->points[idx];
+            sumX += pt.x;
+            sumY += pt.y;
+            sumZ += pt.z;
+            if (pt.x < minX) minX = pt.x;
         }
+
+        size_t count = inliers->indices.size();
+        result.detected    = true;
+        result.distance    = minX;
+        result.centerY     = sumY / static_cast<float>(count);
+        result.centerZ     = sumZ / static_cast<float>(count);
+        result.inlierCount = static_cast<int>(count);
+
+        return result;
     }
 
-    if (inBarRegion && barEnd < 0) {
-        barEnd = numStrips - 1;
+    /**
+     * @brief 根据距离计算接近速度（距离越近速度越慢）
+     * @param distance 到横棒的距离 (m)
+     * @return float 前进速度 (m/s)
+     */
+    float computeApproachSpeed(float distance)
+    {
+        if (distance <= JUMP_DISTANCE)
+            return 0.0f;
+        if (distance >= DISTANCE_SLOWDOWN)
+            return APPROACH_SPEED;
+
+        float ratio = (distance - JUMP_DISTANCE) / (DISTANCE_SLOWDOWN - JUMP_DISTANCE);
+        return APPROACH_SPEED_MIN + (APPROACH_SPEED - APPROACH_SPEED_MIN) * ratio;
     }
 
-    // 检查候选区域是否符合横棒特征
-    if (barStart < 0 || barEnd < 0) {
-        return false;
+    /**
+     * @brief 根据横棒横向偏移计算角速度修正
+     * @param centerY 横棒中心 Y 偏移 (m)，正=右侧
+     * @return float 角速度 (rad/s)，正值=左转（以对准横棒）
+     */
+    float computeAngularCorrection(float centerY)
+    {
+        float vyaw = -ANGULAR_KP * centerY;
+        return std::clamp(vyaw, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED);
     }
 
-    int barStripCount = barEnd - barStart + 1;
-    if (barStripCount < 1 || barStripCount > MAX_BAR_STRIPS) {
-        return false;
-    }
+    // ---- ROS2 接口 ----
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloudSub_;
+    rclcpp::TimerBase::SharedPtr controlTimer_;
+};
 
-    // 确保候选区域不在画面最顶部或最底部（避免地面/天花板误判）
-    if (barStart == 0 || barEnd == numStrips - 1) {
-        return false;
-    }
+// ==========================================================================
+// 主函数
+// ==========================================================================
 
-    // 确保候选区域上下都有有效的背景条带
-    if (barStart > 0 && (strips[barStart - 1].validRatio < MIN_WIDTH_RATIO
-        || std::abs(strips[barStart - 1].medianDepth - backgroundDepth) < DEPTH_DIFF_THRESHOLD * 0.5f)) {
-        // 上方是背景，合理
-    } else if (barStart > 0) {
-        return false;
-    }
-
-    barTopRow = strips[barStart].startRow;
-    barBottomRow = strips[barEnd].endRow;
-    return true;
-}
-
+/**
+ * @brief Go2 横棒检测与越障程序入口
+ * @param argc 参数个数
+ * @param argv 参数列表，argv[1] 为网络接口名称
+ * @return int 0 正常退出，-1 异常退出
+ */
 int main(int argc, char** argv)
 {
-    // 解析命令行参数，获取网络接口名称
-    std::string netInterface;
     if (argc < 2) {
         std::cout << "用法: " << argv[0] << " <network_interface>" << std::endl;
         std::cout << "示例: " << argv[0] << " eth0" << std::endl;
         return -1;
     }
-    netInterface = argv[1];
+    std::string netInterface = argv[1];
 
-    // ================================================================
-    // 1. 初始化 RealSense 深度相机
-    // ================================================================
-    int width = 640;
-    int height = 480;
-    int fps = 30;
-
-    rs2::pipeline pipe;
-    rs2::config cfg;
-    cfg.enable_stream(RS2_STREAM_COLOR, width, height, RS2_FORMAT_BGR8, fps);
-    cfg.enable_stream(RS2_STREAM_DEPTH, width, height, RS2_FORMAT_Z16, fps);
-
-    rs2::pipeline_profile profile;
-    try {
-        profile = pipe.start(cfg);
-        std::cout << "RealSense 设备已连接" << std::endl;
-    } catch (const rs2::error& e) {
-        std::cerr << "无法启动 RealSense 设备: " << e.what() << std::endl;
+    // ---- 初始化 Go2 运动桥接 ----
+    std::cout << "正在初始化 Go2 运动桥接 (接口: " << netInterface << ")..." << std::endl;
+    if (!go2_motion_init(netInterface.c_str())) {
+        std::cerr << "运动桥接初始化失败" << std::endl;
         return -1;
     }
+    std::cout << "Go2 运动桥接已就绪" << std::endl;
 
-    auto depth_sensor = profile.get_device().first<rs2::depth_sensor>();
-    float depthScale = depth_sensor.get_depth_scale();
-    std::cout << "深度比例因子: " << depthScale << std::endl;
+    // ---- 机器人站立 ----
+    go2_motion_stand_up();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    rs2::align align_to_color(RS2_STREAM_COLOR);
+    // ---- 初始化 ROS2 ----
+    rclcpp::init(argc, argv);
 
-    rs2::colorizer color_map;
-    color_map.set_option(RS2_OPTION_COLOR_SCHEME, 2.0f);
+    auto node = std::make_shared<Go2JumpNode>();
 
-    // ================================================================
-    // 2. 初始化 Unitree SDK2 通信通道与运动控制
-    // ================================================================
-    if (!netInterface.empty()) {
-        unitree::robot::ChannelFactory::Instance()->Init(0, netInterface);
-    } else {
-        unitree::robot::ChannelFactory::Instance()->Init(0);
-    }
+    std::cout << "\n+------------------------------------------------+\n";
+    std::cout <<   "|  Go2 横棒检测与越障程序                         |\n";
+    std::cout <<   "+------------------------------------------------+\n";
+    std::cout <<   "|  参数:                                          |\n";
+    std::cout <<   "|    起跳距离: " << JUMP_DISTANCE << " m                             |\n";
+    std::cout <<   "|    接近速度: " << APPROACH_SPEED << " m/s                          |\n";
+    std::cout <<   "|  ROI 前方: " << ROI_X_MIN << "~" << ROI_X_MAX << " m                          |\n";
+    std::cout <<   "|  ROI 高度: " << ROI_Z_MIN << "~" << ROI_Z_MAX << " m                        |\n";
+    std::cout <<   "+------------------------------------------------+\n";
+    std::cout <<   "|  控制: [q] 退出  [Space] 暂停/恢复              |\n";
+    std::cout <<   "+------------------------------------------------+\n";
+    std::cout << "\n等待横棒检测..." << std::endl;
 
-    Go2SportSwitch sport;
-    std::cout << "Go2 运动控制已就绪 (网络接口: " << netInterface << ")" << std::endl;
+    // ---- 主循环: ROS2 spin + 键盘控制 ----
+    // 由于控制逻辑在 ROS2 定时器中运行，主线程仅处理键盘输入
+    while (rclcpp::ok() && g_running) {
+        rclcpp::spin_some(node);
 
-    // ================================================================
-    // 3. 创建显示窗口
-    // ================================================================
-    const std::string winColor = "RealSense Color (横棒检测)";
-    const std::string winDepth = "RealSense Depth Heatmap";
-
-    cv::namedWindow(winColor, cv::WINDOW_AUTOSIZE);
-    cv::namedWindow(winDepth, cv::WINDOW_AUTOSIZE);
-
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "横棒检测已启动，等待检测水平横棒..." << std::endl;
-    std::cout << "控制: [q/Esc] 手动退出" << std::endl;
-    std::cout << "========================================" << std::endl;
-
-    // ================================================================
-    // 4. 主循环：深度帧采集 → 横棒检测 → 触发前跳 → 退出
-    // ================================================================
-    int confirmCount = 0;       // 连续确认计数
-    const int maxConfirm = CONFIRM_FRAMES;
-
-    while (true)
-    {
-        rs2::frameset frames;
-        try {
-            frames = pipe.wait_for_frames();
-        } catch (const rs2::error& e) {
-            std::cerr << "获取帧失败: " << e.what() << std::endl;
-            break;
-        }
-
-        frames = align_to_color.process(frames);
-
-        rs2::frame colorFrame = frames.get_color_frame();
-        rs2::frame depthFrame = frames.get_depth_frame();
-
-        if (!colorFrame || !depthFrame) {
-            continue;
-        }
-
-        // 构建 OpenCV 矩阵
-        cv::Mat colorMat(cv::Size(width, height), CV_8UC3,
-                         (void*)colorFrame.get_data(), cv::Mat::AUTO_STEP);
-        cv::Mat depthRaw(cv::Size(width, height), CV_16UC1,
-                         (void*)depthFrame.get_data(), cv::Mat::AUTO_STEP);
-
-        // 深度热力图
-        rs2::frame depthColored = color_map.process(depthFrame);
-        cv::Mat depthMat(cv::Size(width, height), CV_8UC3,
-                         (void*)depthColored.get_data(), cv::Mat::AUTO_STEP);
-
-        // 横棒检测
-        int barTop = -1, barBottom = -1;
-        bool barDetected = detectHorizontalBar(depthRaw, depthScale,
-                                                barTop, barBottom);
-
-        if (barDetected) {
-            confirmCount++;
-            std::cout << "[检测] 发现候选横棒 (条带行: " << barTop << "~" << barBottom
-                      << "), 确认计数: " << confirmCount << "/" << maxConfirm << std::endl;
-
-            // 在彩色图上绘制横棒候选区域
-            cv::line(colorMat, cv::Point(0, barTop), cv::Point(width - 1, barTop),
-                     cv::Scalar(0, 255, 0), 2);
-            cv::line(colorMat, cv::Point(0, barBottom), cv::Point(width - 1, barBottom),
-                     cv::Scalar(0, 255, 0), 2);
-            cv::rectangle(colorMat, cv::Point(0, barTop),
-                          cv::Point(width - 1, barBottom),
-                          cv::Scalar(0, 255, 0), 1);
-        } else {
-            if (confirmCount > 0) {
-                std::cout << "[检测] 横棒消失，重置确认计数" << std::endl;
+        // 检查标准输入是否有键盘输入（非阻塞轮询）
+        // 注意: 由于终端可能被其他输出打断，这里使用简单的轮询方式
+        struct timeval tv = {0, 50000}; // 50ms timeout
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        int ret = select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
+        if (ret > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
+            char ch;
+            if (read(STDIN_FILENO, &ch, 1) == 1) {
+                if (ch == 'q' || ch == 'Q') {
+                    std::cout << "\n退出程序中..." << std::endl;
+                    g_running = false;
+                    break;
+                } else if (ch == ' ') {
+                    g_paused = !g_paused;
+                    if (g_paused) {
+                        go2_motion_stop();
+                        std::cout << ">>> 运动已暂停" << std::endl;
+                    } else {
+                        std::cout << ">>> 运动已恢复" << std::endl;
+                    }
+                }
             }
-            confirmCount = 0;
-        }
-
-        // 显示画面
-        cv::imshow(winColor, colorMat);
-        cv::imshow(winDepth, depthMat);
-
-        // 确认帧数达标，触发前跳
-        if (confirmCount >= maxConfirm) {
-            std::cout << "\n========================================" << std::endl;
-            std::cout << "!!! 检测到水平横棒，触发前跳 !!!" << std::endl;
-            std::cout << "========================================" << std::endl;
-
-            sport.FrontJump();
-
-            std::cout << "前跳完成，程序退出。" << std::endl;
-            break;
-        }
-
-        // 键盘控制
-        char key = (char)cv::waitKey(1);
-        if (key == 'q' || key == 27) {
-            std::cout << "用户手动退出。" << std::endl;
-            break;
         }
     }
 
-    cv::destroyAllWindows();
+    // ---- 清理 ----
+    go2_motion_stop();
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    if (rclcpp::ok()) {
+        rclcpp::shutdown();
+    }
     return 0;
 }

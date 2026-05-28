@@ -46,6 +46,36 @@ void go2_motion_stop();
 void go2_motion_move(float vx, float vy, float vyaw);
 
 /**
+ * @brief 执行前跳（FrontJump）动作
+ *
+ * 机器狗向前方跳跃，适用于越障或跨越小沟壑等场景。
+ */
+void go2_motion_front_jump();
+
+/**
+ * @brief 获取最新 IMU 姿态数据（线程安全）
+ *
+ * 数据来源为 DDS rt/sportmodestate 话题中的 IMUState，
+ * 与 ROS2 /lowstate 节点中的 imu_state 字段等价。
+ *
+ * @param roll  输出参数：横滚角 (rad)
+ * @param pitch 输出参数：俯仰角 (rad)
+ * @param yaw   输出参数：偏航角 (rad)
+ * @return true 获取成功
+ */
+bool go2_motion_get_imu(float* roll, float* pitch, float* yaw);
+
+/**
+ * @brief 切换到静态行走步态（StaticWalk，适用于爬楼梯等复杂地形）
+ */
+void go2_motion_static_walk();
+
+/**
+ * @brief 切换到自由行走步态（FreeWalk，默认行走模式）
+ */
+void go2_motion_free_walk();
+
+/**
  * @brief 获取最新里程计数据（线程安全）
  * @param x 输出参数：x 坐标 (m)
  * @param y 输出参数：y 坐标 (m)

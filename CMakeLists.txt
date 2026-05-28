@@ -43,6 +43,7 @@ find_library(DDSCXX_LIB ddscxx
 find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(realsense2 REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common filters segmentation)
 
 if(DDSC_LIB)
   add_library(ddsc SHARED IMPORTED GLOBAL)
@@ -173,18 +174,6 @@ target_link_libraries(go2_walking
     realsense2::realsense2
 )
 
-# Jump executable (RealSense深度横棒检测 → FrontJump前跳)
-add_executable(go2_jump src/go2_jump.cpp)
-add_unitree_includes(go2_jump)
-target_link_libraries(go2_jump
-    unitree_sdk2
-    ddsc
-    ddscxx
-    ${OpenCV_LIBS}
-    Threads::Threads
-    realsense2::realsense2
-)
-
 # Diagnostic check executable (段错误诊断工具) — 暂不可编译
 # add_executable(check src/check.cpp)
 # add_unitree_includes(check)
@@ -218,6 +207,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(pcl_conversions REQUIRED)
 
 # SLAM + Nav2 桥接节点（仅含 ROS2 + motion bridge，不含 Unitree DDS 头文件）
 add_executable(go2_slam src/go2_slam.cpp)
@@ -261,6 +251,85 @@ target_link_libraries(DWBPlanner PUBLIC NavFnPlanner)
 add_library(MapLoader src/MapLoader.cpp)
 target_include_directories(MapLoader PUBLIC ${PROJECT_INCLUDES})
 
+# ---- Go2 上下楼梯节点 (爬楼梯模式 → IMU水平检测 → 旋转45° → 下楼梯 → 行走模式) ----
+add_executable(go2_walk_stair src/go2_walk_stair.cpp)
+target_include_directories(go2_walk_stair PRIVATE
+    ${PROJECT_INCLUDES}
+    ${rclcpp_INCLUDE_DIRS}
+)
+target_link_libraries(go2_walk_stair
+    go2_motion_bridge
+    unitree_sdk2
+    ddsc
+    ddscxx
+    Threads::Threads
+    ${rclcpp_LIBRARIES}
+)
+
+# ---- Go2 横棒检测与跳跃节点 (PCL点云横棒检测 → 行走接近 → FrontJump前跳) ----
+add_executable(go2_jump src/go2_jump.cpp)
+target_include_directories(go2_jump PRIVATE
+    ${PROJECT_INCLUDES}
+    ${PCL_INCLUDE_DIRS}
+    ${rclcpp_INCLUDE_DIRS}
+    ${sensor_msgs_INCLUDE_DIRS}
+    ${pcl_conversions_INCLUDE_DIRS}
+)
+target_link_libraries(go2_jump
+    go2_motion_bridge
+    unitree_sdk2
+    ddsc
+    ddscxx
+    Threads::Threads
+    ${PCL_LIBRARIES}
+    ${rclcpp_LIBRARIES}
+    ${sensor_msgs_LIBRARIES}
+    ${pcl_conversions_LIBRARIES}
+    ${OpenCV_LIBS}
+)
+
+# ---- Go2 全流程自动化主程序 ----
+# 整合避障关闭、跳跃、巡线、导航、楼梯、颜色检测、动作识别等全部阶段
+add_executable(main src/main.cpp)
+add_unitree_includes(main)
+target_include_directories(main PRIVATE
+    ${PROJECT_INCLUDES}
+    ${PCL_INCLUDE_DIRS}
+    ${rclcpp_INCLUDE_DIRS}
+    ${sensor_msgs_INCLUDE_DIRS}
+    ${nav_msgs_INCLUDE_DIRS}
+    ${geometry_msgs_INCLUDE_DIRS}
+    ${tf2_ros_INCLUDE_DIRS}
+    ${nav2_msgs_INCLUDE_DIRS}
+    ${std_msgs_INCLUDE_DIRS}
+    ${builtin_interfaces_INCLUDE_DIRS}
+    ${YAML_CPP_INCLUDE_DIR}
+    ${pcl_conversions_INCLUDE_DIRS}
+)
+target_link_libraries(main
+    go2_motion_bridge
+    DWBPlanner
+    NavFnPlanner
+    YOLODetector
+    unitree_sdk2
+    ddsc
+    ddscxx
+    yaml-cpp
+    Threads::Threads
+    realsense2::realsense2
+    ${PCL_LIBRARIES}
+    ${OpenCV_LIBS}
+    ${rclcpp_LIBRARIES}
+    ${sensor_msgs_LIBRARIES}
+    ${nav_msgs_LIBRARIES}
+    ${geometry_msgs_LIBRARIES}
+    ${tf2_ros_LIBRARIES}
+    ${nav2_msgs_LIBRARIES}
+    ${std_msgs_LIBRARIES}
+    ${builtin_interfaces_LIBRARIES}
+    ${pcl_conversions_LIBRARIES}
+)
+
 # ---- Go2 自主导航节点 (Nav2 FollowWaypoints / NavigateToPose) ----
 add_executable(go2_navigation "src/ go2_navigation.cpp")
 target_include_directories(go2_navigation PRIVATE
@@ -277,6 +346,8 @@ target_include_directories(go2_navigation PRIVATE
 )
 target_link_libraries(go2_navigation
     go2_motion_bridge
+    DWBPlanner
+    NavFnPlanner
     unitree_sdk2
     ddsc
     ddscxx

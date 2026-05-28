@@ -29,8 +29,8 @@ graph TD
     - [x] 机器狗运动控制耦合 (go2_walking.cpp)
 - [ ] **自动评估系统**：通过比对人工标记的数据，自动评估图像预处理算法的准确度。
 - [ ] **自动避障**：识别并绕过赛道上的障碍物。
-- [ ] **越障功能**：处理不平整地面或小型障碍。
-- [ ] **爬楼梯**：实现稳定的楼梯自主攀爬。
+- [x] **越障功能**：处理不平整地面或小型障碍（go2_jump.cpp：PCL点云横棒检测 + FrontJump）。
+- [x] **爬楼梯**：实现稳定的楼梯自主攀爬（go2_walk_stair.cpp：IMU姿态检测 + 步态切换）。
 - [ ] **图标识别**：识别赛道中的特定功能图标或指示牌。
 - [ ] **特殊动作执行**：根据任务需求执行打招呼、蹲下等预设动作。
 - [ ] **机械臂抓取**：实现与机器狗背负/集成机械臂的协同抓取任务。
@@ -40,6 +40,8 @@ graph TD
 - Unitree SDK2
 - OpenCV 4.x
 - librealsense2
+- PCL 1.10 (点云处理)
+- ROS2 Foxy (rclcpp, sensor_msgs, pcl_conversions 等)
 
 ## 环境准备
 
@@ -76,3 +78,5 @@ make
 详细的模块使用说明及接口定义请参阅：
 
 - [LineProcessor 模块使用说明](docs/LineProcessor.md)
+- [Go2 横棒检测与越障模块 (go2_jump)](docs/go2_jump.md)
+- [Go2 上下楼梯模块 (go2_walk_stair)](docs/go2_walk_stair.md)

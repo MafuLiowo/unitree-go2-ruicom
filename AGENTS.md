@@ -59,7 +59,9 @@ float getLineCenter(const cv::Mat& binary);
 │   ├── LineProcessor.md    # LineProcessor 模块的使用示例与参数配置
 │   ├── safety_detection.md # 安全检测模块文档
 │   ├── go2_slam.md         # Go2 SLAM 建图与 Nav2 导航使用说明
-│   └── go2_navigation.md   # Go2 自主导航模块文档（NavFn + DWB + AMCL）
+│   ├── go2_jump.md         # Go2 横棒检测与越障模块文档（PCL 点云 + FrontJump）
+│   ├── go2_navigation.md   # Go2 自主导航模块文档（FollowWaypoints/NavigateToPose）
+│   ├── go2_walk_stair.md   # Go2 上下楼梯模块文档（IMU 姿态检测 + 步态切换）
 ├── include/                # 头文件目录
 │   ├── Go2SportSwitch.hpp      # Go2 高层运动控制封装，提供 Stretch/Hello/StopMove/FrontJump/WalkStair
 │   ├── Go2LightController.hpp  # Go2 灯光控制封装，支持常亮、闪烁等灯效
@@ -69,17 +71,17 @@ float getLineCenter(const cv::Mat& binary);
 │   ├── NavFnPlanner.hpp        # NavFn 全局路径规划器接口（势场传播 + 梯度下降）
 │   ├── DWBPlanner.hpp          # DWB 局部路径规划器接口（速度采样 + 轨迹评分）
 │   ├── MapLoader.hpp           # 地图加载模块接口（PGM/YAML 解析）
-│   └── go2_motion_bridge.hpp   # Go2 运动控制与传感器数据桥接 C API，供 ROS2 节点调用
+│   └── go2_motion_bridge.hpp   # Go2 运动控制与传感器数据桥接 C API（IMU/里程计/雷达/步态控制），供 ROS2 节点调用
 ├── src/                    # 源文件目录
 │   ├── go2_video_display.cpp        # RealSense 实时画面显示程序
 │   ├── go2_video_display_origin.cpp # Go2 原生摄像头实时画面显示程序
 │   ├── go2_process_image.cpp        # HSV 颜色识别与 V 通道反二值化程序
 │   ├── go2_sport_switch.cpp         # 高层运动控制交互程序，支持 Stretch/Hello/StopMove/FrontJump
-│   ├── go2_walk_stair.cpp           # 楼梯行走控制程序
+│   ├── go2_walk_stair.cpp           # 上下楼梯行走程序，IMU 姿态检测平地 + 步态切换 + 旋转下楼梯
 │   ├── go2_light_controller.cpp     # 灯光控制客户端，控制 Go2 机器人 LED 灯效
 │   ├── go2_photo.cpp                # Go2 原生相机拍照程序，按 s 保存图片到 ./photo/
 │   ├── go2_walking.cpp              # 视觉巡线行走程序，基于 RealSense 二值化进行路径检测与 Go2 运动控制
-│   ├── go2_jump.cpp                 # RealSense 深度横棒检测 → FrontJump 前跳程序
+│   ├── go2_jump.cpp                 # PCL 点云横棒检测 → 行走接近 → FrontJump 前跳程序
 │   ├── go2_yolo_identify.cpp        # YOLO 目标检测识别程序，使用 Go2 原生摄像头
 │   ├── go2_action.cpp               # 视觉动作联动程序，YOLO 识别触发运动/灯光动作
 │   ├── go2_navigation.cpp           # Go2 自主导航程序（NavFn + DWB + AMCL 整合）
@@ -87,7 +89,7 @@ float getLineCenter(const cv::Mat& binary);
 │   ├── DWBPlanner.cpp               # DWB 局部规划器实现（速度采样+轨迹模拟+评分）
 │   ├── MapLoader.cpp                # 地图加载实现（PGM/YAML 解析）
 │   ├── YOLODetector.cpp             # YOLO 目标检测模块实现（ONNX 模型加载与推理）
-│   ├── go2_motion_bridge.cpp        # Go2 运动控制与传感器数据桥接实现（DDS 通信）
+│   ├── go2_motion_bridge.cpp        # Go2 运动控制与传感器数据桥接实现（DDS 通信，含 IMU/里程计/步态控制）
 │   └── go2_slam.cpp                 # SLAM 建图与 Nav2 导航桥接程序，ASCII 实时地图显示
 
 └── unitree_sdk2/           # Unitree SDK2 库及头文件

@@ -130,6 +130,32 @@ void go2_motion_move(float vx, float vy, float vyaw)
     if (g_sportClient) g_sportClient->Move(vx, vy, vyaw);
 }
 
+void go2_motion_front_jump()
+{
+    if (g_sportClient) g_sportClient->FrontJump();
+}
+
+bool go2_motion_get_imu(float* roll, float* pitch, float* yaw)
+{
+    if (!roll || !pitch || !yaw) return false;
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    *roll  = g_latestState.imu_state().rpy()[0];
+    *pitch = g_latestState.imu_state().rpy()[1];
+    *yaw   = g_latestState.imu_state().rpy()[2] - g_yaw0;
+    return true;
+}
+
+void go2_motion_static_walk()
+{
+    if (g_sportClient) g_sportClient->StaticWalk();
+}
+
+void go2_motion_free_walk()
+{
+    if (g_sportClient) g_sportClient->FreeWalk();
+}
+
 bool go2_motion_get_odom(float* x, float* y, float* yaw, float* vx, float* vyaw)
 {
     if (!x || !y || !yaw || !vx || !vyaw) return false;

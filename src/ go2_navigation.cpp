@@ -1,6 +1,6 @@
 /**
  * @file go2_navigation.cpp
- * @brief Go2 自主导航程序，读取 route.yaml 路径点并通过 Nav2 动作接口进行导航
+ * @brief Go2 自主导航程序，读取 route.yaml 路径点并通过 Nav2 动作接口进行导航，使用本地 DWBPlanner 进行基于 footprint 的局部避障
  *
  * @par 使用说明
  *       go2_navigation <network_interface> [route_file]
@@ -11,9 +11,15 @@
  *             route.yaml 中的路径点并通过 Nav2 动作服务器发送导航目标。
  *             优先使用 FollowWaypoints 一次性发送全部路径点，
  *             不可用时回退到 NavigateToPose 逐个发送。
+ *             局部控制使用本地 DWBPlanner（基于 GO2_FOOTPRINT 足迹多边形避障），
+ *             接收 Nav2 的 /plan 和 /local_costmap/costmap 作为输入，
+ *             自行计算并下发 cmd_vel。
  *
  *       配合: 需在其他终端启动 Nav2 导航栈 (bt_navigator / planner_server /
  *             controller_server)、AMCL 定位与地图服务器。
+ *
+ *       足迹: GO2_FOOTPRINT 定义在文件顶部，默认为 0.7m x 0.4m 矩形，
+ *             可根据实际机器人尺寸修改 FootprintPoint 数组。
  *
  *       控制:
  *             r     - 重新发送所有路径点
@@ -33,7 +39,10 @@
 #include <nav2_msgs/action/follow_waypoints.hpp>
 
 #include "go2_motion_bridge.hpp"
+#include "DWBPlanner.hpp"
 
+#include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <iostream>
@@ -62,6 +71,18 @@ constexpr float NAV_ANGULAR_SPEED_MAX = 1.00f;
 
 /// @brief 数据发布频率 (Hz)
 constexpr double PUBLISH_RATE_HZ = 30.0;
+
+/// @brief DWB 局部规划控制频率 (Hz)
+constexpr double DWB_CONTROL_RATE_HZ = 20.0;
+
+/// @brief Go2 机器人足迹多边形（相对于 base_link 中心，逆时针，单位 m）
+/// 默认值约为 0.7m x 0.4m 矩形，可根据实际机器人尺寸调整
+const std::vector<FootprintPoint> GO2_FOOTPRINT = {
+    { 0.38f,  0.20f, 0.0f},
+    { 0.38f, -0.20f, 0.0f},
+    {-0.35f, -0.20f, 0.0f},
+    {-0.35f,  0.20f, 0.0f},
+};
 
 /**
  * @brief 获取当前 ROS 时间戳
@@ -141,15 +162,30 @@ public:
     {
         (void)netInterface;
 
+        // ---- DWB 局部规划器配置（基于 footprint 避障） ----
+        DWBConfig dwbConfig;
+        dwbConfig.footprint      = GO2_FOOTPRINT;
+        dwbConfig.maxLinearVel   = NAV_FORWARD_SPEED_MAX;
+        dwbConfig.maxAngularVel  = NAV_ANGULAR_SPEED_MAX;
+        dwbConfig.minAngularVel  = -NAV_ANGULAR_SPEED_MAX;
+        dwbConfig.robotRadius    = 0.35f;
+        dwbConfig.goalTolerance  = 0.3f;
+        dwbConfig.lookaheadIndex = 5;
+        dwbPlanner_.setConfig(dwbConfig);
+
         // ---- ROS2 发布器 ----
         cloudPub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/utlidar/cloud", 10);
         scanPub_  = this->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
         odomPub_  = this->create_publisher<nav_msgs::msg::Odometry>("/odom", 10);
 
-        // ---- ROS2 订阅器 ----
-        cmdVelSub_ = this->create_subscription<geometry_msgs::msg::Twist>(
-            "/cmd_vel", 10,
-            std::bind(&Go2NavigationNode::cmdVelCallback, this, std::placeholders::_1));
+        // ---- ROS2 订阅器：接收 Nav2 全局规划与局部代价地图 ----
+        planSub_ = this->create_subscription<nav_msgs::msg::Path>(
+            "/plan", rclcpp::QoS(10).transient_local(),
+            std::bind(&Go2NavigationNode::planCallback, this, std::placeholders::_1));
+
+        costmapSub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            "/local_costmap/costmap", 10,
+            std::bind(&Go2NavigationNode::costmapCallback, this, std::placeholders::_1));
 
         // ---- TF 广播器 ----
         tfBroadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -164,6 +200,11 @@ public:
         publishTimer_ = this->create_wall_timer(
             std::chrono::milliseconds(static_cast<int>(1000.0 / PUBLISH_RATE_HZ)),
             std::bind(&Go2NavigationNode::publishSensorData, this));
+
+        // ---- DWB 局部规划控制定时器（基于 footprint 避障） ----
+        dwbTimer_ = this->create_wall_timer(
+            std::chrono::milliseconds(static_cast<int>(1000.0 / DWB_CONTROL_RATE_HZ)),
+            std::bind(&Go2NavigationNode::dwbControlLoop, this));
 
         RCLCPP_INFO(this->get_logger(), "Go2 导航节点已就绪");
     }
@@ -215,6 +256,35 @@ private:
     std::vector<Waypoint> waypoints_;
     size_t currentWpIndex_ = 0;
     std::atomic<bool> allDone_{false};
+
+    // ---- DWB 局部规划器（基于 footprint 避障） ----
+    DWBPlanner dwbPlanner_;                          ///< DWB 局部规划器实例
+    std::atomic<bool> useLocalDWB_{true};            ///< 是否启用本地 DWB 控制
+
+    /// @brief 当前里程计数据（供 DWB 使用）
+    mutable std::mutex odomMutex_;
+    float currentOdomX_   = 0.0f;
+    float currentOdomY_   = 0.0f;
+    float currentOdomYaw_ = 0.0f;
+    float currentOdomVx_  = 0.0f;
+    float currentOdomVyaw_= 0.0f;
+
+    /// @brief 全局路径缓存（来自 Nav2 planner_server 的 /plan 话题）
+    mutable std::mutex planMutex_;
+    std::vector<PathPoint> currentPlan_;
+
+    /// @brief 局部代价地图缓存（来自 Nav2 costmap_2d 的 /local_costmap/costmap 话题）
+    mutable std::mutex costmapMutex_;
+    nav_msgs::msg::OccupancyGrid currentCostmap_;
+
+    /// @brief plan 话题订阅器
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr planSub_;
+
+    /// @brief 局部代价地图订阅器
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmapSub_;
+
+    /// @brief DWB 局部控制定时器
+    rclcpp::TimerBase::SharedPtr dwbTimer_;
 
     // ---- NavigateToPose 动作客户端 ----
     /**
@@ -383,6 +453,16 @@ private:
         // ---- 获取并发布里程计 + TF ----
         float odomX = 0, odomY = 0, odomYaw = 0, odomVx = 0, odomVyaw = 0;
         if (go2_motion_get_odom(&odomX, &odomY, &odomYaw, &odomVx, &odomVyaw)) {
+            // 缓存里程计数据供 DWB 局部规划器使用
+            {
+                std::lock_guard<std::mutex> lock(odomMutex_);
+                currentOdomX_    = odomX;
+                currentOdomY_    = odomY;
+                currentOdomYaw_  = odomYaw;
+                currentOdomVx_   = odomVx;
+                currentOdomVyaw_ = odomVyaw;
+            }
+
             auto odomMsg = std::make_unique<nav_msgs::msg::Odometry>();
             odomMsg->header.stamp = stamp;
             odomMsg->header.frame_id = "odom";
@@ -482,23 +562,107 @@ private:
     }
 
     /**
-     * @brief ROS2 cmd_vel 回调，转发速度指令到 Go2 运动桥接
-     * @param msg Twist 速度指令
+     * @brief /plan 话题回调，缓存 Nav2 全局规划器输出的路径
+     * @param msg 全局路径消息
      */
-    void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
+    void planCallback(const nav_msgs::msg::Path::SharedPtr msg)
     {
-        float vx   = std::clamp(static_cast<float>(msg->linear.x),
-                               -NAV_FORWARD_SPEED_MAX, NAV_FORWARD_SPEED_MAX);
-        float vyaw = std::clamp(static_cast<float>(msg->angular.z),
-                               -NAV_ANGULAR_SPEED_MAX, NAV_ANGULAR_SPEED_MAX);
-        go2_motion_move(vx, 0.0f, vyaw);
+        std::vector<PathPoint> plan;
+        plan.reserve(msg->poses.size());
+        for (const auto& pose : msg->poses) {
+            PathPoint pt;
+            pt.x  = static_cast<float>(pose.pose.position.x);
+            pt.y  = static_cast<float>(pose.pose.position.y);
+            pt.dx = 0.0f;
+            pt.dy = 0.0f;
+            plan.push_back(pt);
+        }
+        std::lock_guard<std::mutex> lock(planMutex_);
+        currentPlan_ = std::move(plan);
+    }
+
+    /**
+     * @brief /local_costmap/costmap 话题回调，缓存局部代价地图
+     * @param msg 占用栅格地图消息
+     */
+    void costmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+    {
+        std::lock_guard<std::mutex> lock(costmapMutex_);
+        currentCostmap_ = *msg;
+    }
+
+    /**
+     * @brief DWB 局部规划控制循环（20Hz）
+     *
+     * 定时获取当前里程计、全局路径和局部代价地图，
+     * 调用 DWBPlanner 基于 footprint 计算最优速度指令并发送到运动桥接。
+     */
+    void dwbControlLoop()
+    {
+        if (!useLocalDWB_) return;
+
+        // 获取当前里程计
+        float odomX, odomY, odomYaw, odomVx, odomVyaw;
+        {
+            std::lock_guard<std::mutex> lock(odomMutex_);
+            odomX    = currentOdomX_;
+            odomY    = currentOdomY_;
+            odomYaw  = currentOdomYaw_;
+            odomVx   = currentOdomVx_;
+            odomVyaw = currentOdomVyaw_;
+        }
+
+        // 获取全局路径
+        std::vector<PathPoint> plan;
+        {
+            std::lock_guard<std::mutex> lock(planMutex_);
+            plan = currentPlan_;
+        }
+
+        // 获取局部代价地图
+        nav_msgs::msg::OccupancyGrid costmap;
+        {
+            std::lock_guard<std::mutex> lock(costmapMutex_);
+            costmap = currentCostmap_;
+        }
+
+        // 若路径或代价地图为空，暂停运动
+        if (plan.empty() || costmap.data.empty()) {
+            go2_motion_move(0.0f, 0.0f, 0.0f);
+            return;
+        }
+
+        // 构造 DWB 输入
+        Pose2D currentPose;
+        currentPose.x   = odomX;
+        currentPose.y   = odomY;
+        currentPose.yaw = odomYaw;
+
+        float cmdVx = 0.0f, cmdVyaw = 0.0f;
+        bool ok = dwbPlanner_.computeVelocity(
+            currentPose, odomVx, odomVyaw,
+            plan,
+            costmap.data.data(),
+            static_cast<int>(costmap.info.width),
+            static_cast<int>(costmap.info.height),
+            static_cast<float>(costmap.info.resolution),
+            static_cast<float>(costmap.info.origin.position.x),
+            static_cast<float>(costmap.info.origin.position.y),
+            cmdVx, cmdVyaw);
+
+        if (ok) {
+            float vx   = std::clamp(cmdVx,   -NAV_FORWARD_SPEED_MAX, NAV_FORWARD_SPEED_MAX);
+            float vyaw = std::clamp(cmdVyaw, -NAV_ANGULAR_SPEED_MAX, NAV_ANGULAR_SPEED_MAX);
+            go2_motion_move(vx, 0.0f, vyaw);
+        } else {
+            go2_motion_move(0.0f, 0.0f, 0.0f);
+        }
     }
 
     // ---- ROS2 接口 ----
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloudPub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr   scanPub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr       odomPub_;
-    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr  cmdVelSub_;
     rclcpp::TimerBase::SharedPtr                                publishTimer_;
     std::unique_ptr<tf2_ros::TransformBroadcaster>              tfBroadcaster_;
 

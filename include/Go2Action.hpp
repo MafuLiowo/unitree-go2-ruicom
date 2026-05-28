@@ -75,6 +75,29 @@ public:
      */
     void Run();
 
+    /**
+     * @brief 从 Go2 原生摄像头获取一帧图像（公开接口）
+     * @return cv::Mat 解码后的 BGR 图像，获取失败返回空 Mat
+     */
+    cv::Mat GetFrame() { return GetGo2Frame(); }
+
+    /**
+     * @brief 根据检测结果分发执行对应动作（公开接口，含冷却检查）
+     * @param detections 当前帧的检测结果列表
+     */
+    void Dispatch(const std::vector<Detection>& detections) { DispatchActions(detections); }
+
+    /**
+     * @brief 等待当前异步动作完成（公开接口）
+     */
+    void WaitDone() { WaitForActionDone(); }
+
+    /**
+     * @brief 检查当前是否有动作正在执行
+     * @return true 有动作执行中
+     */
+    bool IsActionRunning() const { return actionRunning_; }
+
 private:
     /**
      * @brief 从 Go2 原生摄像头获取一帧图像
