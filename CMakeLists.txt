@@ -217,7 +217,7 @@ find_package(tf2_ros REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
-find_package(nav2_costmap_2d REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # SLAM + Nav2 桥接节点（仅含 ROS2 + motion bridge，不含 Unitree DDS 头文件）
 add_executable(go2_slam src/go2_slam.cpp)
@@ -261,7 +261,7 @@ target_link_libraries(DWBPlanner PUBLIC NavFnPlanner)
 add_library(MapLoader src/MapLoader.cpp)
 target_include_directories(MapLoader PUBLIC ${PROJECT_INCLUDES})
 
-# ---- Go2 自主导航节点 (NavFn + DWB + AMCL) ----
+# ---- Go2 自主导航节点 (Nav2 FollowWaypoints / NavigateToPose) ----
 add_executable(go2_navigation "src/ go2_navigation.cpp")
 target_include_directories(go2_navigation PRIVATE
     ${PROJECT_INCLUDES}
@@ -270,16 +270,17 @@ target_include_directories(go2_navigation PRIVATE
     ${nav_msgs_INCLUDE_DIRS}
     ${geometry_msgs_INCLUDE_DIRS}
     ${tf2_ros_INCLUDE_DIRS}
+    ${nav2_msgs_INCLUDE_DIRS}
     ${std_msgs_INCLUDE_DIRS}
     ${builtin_interfaces_INCLUDE_DIRS}
+    ${YAML_CPP_INCLUDE_DIR}
 )
 target_link_libraries(go2_navigation
-    NavFnPlanner
-    DWBPlanner
     go2_motion_bridge
     unitree_sdk2
     ddsc
     ddscxx
+    yaml-cpp
     Threads::Threads
     ${rclcpp_LIBRARIES}
     ${sensor_msgs_LIBRARIES}

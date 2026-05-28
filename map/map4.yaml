@@ -1,4 +1,4 @@
-image: ./map4.pgm
+image: /home/mafu/ai-unitree-go2-ruicom/map/map4.pgm
 mode: trinary
 resolution: 0.05
 origin: [-11.2, -6.26, 0]

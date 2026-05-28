@@ -1,295 +1,386 @@
 /**
  * @file go2_navigation.cpp
- * @brief Go2 自主导航程序，集成 AMCL 定位、NavFn 全局规划、DWB 局部规划与 Go2 运动控制
+ * @brief Go2 自主导航程序，读取 route.yaml 路径点并通过 Nav2 动作接口进行导航
  *
  * @par 使用说明
- *       需配合 AMCL 和 map_server 节点使用：
- *       1. ros2 run nav2_map_server map_server --ros-args -p yaml_filename:=/path/to/map.yaml
- *       2. ros2 run nav2_amcl amcl
- *       3. ./go2_navigation <network_interface>
+ *       go2_navigation <network_interface> [route_file]
+ *       示例: ./go2_navigation eth0
+ *             ./go2_navigation eth0 custom_route.yaml
  *
- * @par 控制命令（终端输入）
- *       g / 1  - 发送导航目标 (x=2, y=0, yaw=0)  向前 2 米
- *       2      - 发送导航目标 (x=0, y=2, yaw=π/2) 向左 2 米
- *       3      - 发送导航目标 (x=2, y=2, yaw=π/4) 右前方
- *       p      - 打印当前位姿信息
- *       s      - 停止导航
- *       q      - 退出程序
+ *       说明: 本程序桥接 Go2 传感器数据到 ROS2 导航栈，启动后自动读取
+ *             route.yaml 中的路径点并通过 Nav2 动作服务器发送导航目标。
+ *             优先使用 FollowWaypoints 一次性发送全部路径点，
+ *             不可用时回退到 NavigateToPose 逐个发送。
+ *
+ *       配合: 需在其他终端启动 Nav2 导航栈 (bt_navigator / planner_server /
+ *             controller_server)、AMCL 定位与地图服务器。
+ *
+ *       控制:
+ *             r     - 重新发送所有路径点
+ *             s     - 停止导航
+ *             q     - 退出程序
  */
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
-#include <std_msgs/msg/string.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/follow_waypoints.hpp>
 
 #include "go2_motion_bridge.hpp"
-#include "NavFnPlanner.hpp"
-#include "DWBPlanner.hpp"
+
+#include <yaml-cpp/yaml.h>
 
 #include <iostream>
-#include <iomanip>
-#include <sstream>
-#include <cmath>
 #include <string>
+#include <cmath>
 #include <thread>
 #include <chrono>
 #include <mutex>
 #include <atomic>
 #include <queue>
-
-/// @brief 最大线速度 (m/s)
-constexpr float CMD_VX_MAX = 0.30f;
-/// @brief 最大角速度 (rad/s)
-constexpr float CMD_VYAW_MAX = 1.00f;
-
-/// @brief 传感器发布频率 (Hz)
-constexpr double PUBLISH_RATE_HZ = 30.0;
-/// @brief 规划控制频率 (Hz)
-constexpr double CONTROL_RATE_HZ = 20.0;
+#include <vector>
+#include <limits>
+#include <fstream>
 
 /// @brief 雷达扫描参数
-constexpr double LIDAR_ANGLE_MIN  = -M_PI;
-constexpr double LIDAR_ANGLE_MAX  =  M_PI;
-constexpr int    LASER_SCAN_SAMPLES = 720;
-constexpr double LIDAR_RANGE_MIN  = 0.05;
-constexpr double LIDAR_RANGE_MAX  = 20.0;
-constexpr double LIDAR_Z_THRESHOLD = 0.3;
+constexpr double LIDAR_ANGLE_MIN      = -M_PI;
+constexpr double LIDAR_ANGLE_MAX      =  M_PI;
+constexpr double LIDAR_RANGE_MIN      =  0.05;
+constexpr double LIDAR_RANGE_MAX      = 20.0;
+constexpr int    LASER_SCAN_SAMPLES   = 720;
+constexpr double LIDAR_Z_THRESHOLD    = 0.3;
 
-/// @brief 路径重规划距离阈值 (m)
-constexpr float REPLAN_DIST_THRESHOLD = 0.5f;
+/// @brief 导航控制参数
+constexpr float NAV_FORWARD_SPEED_MAX = 0.30f;
+constexpr float NAV_ANGULAR_SPEED_MAX = 1.00f;
 
-/// @brief 机器人足迹多边形顶点（相对于 baselink 中心，逆时针），
-///        修改此数组可调整碰撞检测形状
-static constexpr FootprintPoint ROBOT_FOOTPRINT[] = {
-    { 0.35f,  0.20f, 0.0f},  // 右前
-    { 0.35f, -0.20f, 0.0f},  // 左前
-    {-0.35f, -0.20f, 0.0f},  // 左后
-    {-0.35f,  0.20f, 0.0f},  // 右后
-};
+/// @brief 数据发布频率 (Hz)
+constexpr double PUBLISH_RATE_HZ = 30.0;
 
+/**
+ * @brief 获取当前 ROS 时间戳
+ * @return rclcpp::Time 当前时间
+ */
 inline rclcpp::Time now()
 {
     return rclcpp::Clock().now();
 }
 
 /**
- * @brief Go2 自主导航节点
+ * @brief YAML 路径点数据结构
+ */
+struct Waypoint
+{
+    std::string frame;
+    double x;
+    double y;
+    double yaw;
+};
+
+/**
+ * @brief 解析 route.yaml 文件，提取路径点列表
+ * @param filepath YAML 文件路径
+ * @return std::vector<Waypoint> 解析后的路径点列表
+ */
+static std::vector<Waypoint> parseRouteYaml(const std::string& filepath)
+{
+    std::vector<Waypoint> waypoints;
+
+    // 检查文件是否存在
+    std::ifstream checkFile(filepath);
+    if (!checkFile.good()) {
+        std::cerr << "[错误] 文件不存在: " << filepath << std::endl;
+        return waypoints;
+    }
+    checkFile.close();
+
+    try {
+        YAML::Node config = YAML::LoadFile(filepath);
+        YAML::Node wpNode = config["waypoints"];
+        if (!wpNode || !wpNode.IsSequence()) {
+            std::cerr << "[错误] 未找到 'waypoints' 字段或格式不正确" << std::endl;
+            return waypoints;
+        }
+
+        for (const auto& wp : wpNode) {
+            Waypoint w;
+            w.frame = wp["frame"] ? wp["frame"].as<std::string>() : "map";
+            w.x     = wp["x"].as<double>();
+            w.y     = wp["y"].as<double>();
+            w.yaw   = wp["yaw"].as<double>();
+            waypoints.push_back(w);
+        }
+    } catch (const YAML::Exception& e) {
+        std::cerr << "[错误] YAML 解析失败: " << e.what() << std::endl;
+    }
+
+    return waypoints;
+}
+
+/**
+ * @brief Go2 导航节点
  *
- * 整合 AMCL 定位、NavFn 全局路径规划与 DWB 局部规划，
- * 通过 go2_motion_bridge C API 驱动 Go2 机器人运动。
+ * 桥接 Go2 传感器数据到 ROS2，通过 Nav2 动作接口发送路径点进行自主导航。
  */
 class Go2NavigationNode : public rclcpp::Node
 {
 public:
     /**
      * @brief 构造函数
-     * @param netInterface 网络接口名称
+     * @param netInterface 网络接口名称（预留，运动桥接在主线程中初始化）
+     * @param routeFile route.yaml 文件路径
      */
-    explicit Go2NavigationNode(const std::string& netInterface)
-        : Node("go2_navigation_node")
+    explicit Go2NavigationNode(const std::string& netInterface, const std::string& routeFile)
+        : Node("go2_navigation_node"), routeFile_(routeFile)
     {
         (void)netInterface;
 
-        // ---- 传感器发布器 ----
+        // ---- ROS2 发布器 ----
         cloudPub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/utlidar/cloud", 10);
         scanPub_  = this->create_publisher<sensor_msgs::msg::LaserScan>("/scan", 10);
         odomPub_  = this->create_publisher<nav_msgs::msg::Odometry>("/odom", 10);
 
-        // ---- 订阅器 ----
-        amclPoseSub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "/amcl_pose", 10,
-            std::bind(&Go2NavigationNode::amclPoseCallback, this, std::placeholders::_1));
-
-        mapSub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-            "/map", rclcpp::QoS(1).transient_local(),
-            std::bind(&Go2NavigationNode::mapCallback, this, std::placeholders::_1));
+        // ---- ROS2 订阅器 ----
+        cmdVelSub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+            "/cmd_vel", 10,
+            std::bind(&Go2NavigationNode::cmdVelCallback, this, std::placeholders::_1));
 
         // ---- TF 广播器 ----
         tfBroadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-        // ---- 规划器初始化 ----
-        navFnPlanner_.setParams(1.0f, 1000.0f, 100.0f);
+        // ---- Nav2 动作客户端 ----
+        navToPoseClient_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
+            this, "navigate_to_pose");
+        followWpClient_ = rclcpp_action::create_client<nav2_msgs::action::FollowWaypoints>(
+            this, "follow_waypoints");
 
-        DWBConfig dwbConfig;
-        dwbConfig.maxLinearVel  = CMD_VX_MAX;
-        dwbConfig.minLinearVel  = 0.0f;
-        dwbConfig.maxAngularVel = CMD_VYAW_MAX;
-        dwbConfig.minAngularVel = -CMD_VYAW_MAX;
-        dwbConfig.linearStep    = 0.05f;
-        dwbConfig.angularStep   = 0.1f;
-        dwbConfig.goalTolerance = 0.3f;
-        dwbConfig.simTime       = 1.5f;
-
-        // 硬编码机器人足迹（修改 ROBOT_FOOTPRINT 数组调整碰撞检测形状）
-        dwbConfig.footprint.assign(std::begin(ROBOT_FOOTPRINT), std::end(ROBOT_FOOTPRINT));
-        dwbPlanner_.setConfig(dwbConfig);
-
-        // ---- cmd_vel 发布器 ----
-        cmdVelPub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-
-        // ---- 定时器 ----
+        // ---- 定时发布传感器数据 ----
         publishTimer_ = this->create_wall_timer(
             std::chrono::milliseconds(static_cast<int>(1000.0 / PUBLISH_RATE_HZ)),
             std::bind(&Go2NavigationNode::publishSensorData, this));
 
-        controlTimer_ = this->create_wall_timer(
-            std::chrono::milliseconds(static_cast<int>(1000.0 / CONTROL_RATE_HZ)),
-            std::bind(&Go2NavigationNode::controlLoop, this));
-
         RCLCPP_INFO(this->get_logger(), "Go2 导航节点已就绪");
-        RCLCPP_INFO(this->get_logger(), "等待 AMCL 和地图数据...");
     }
 
     /**
-     * @brief 设置导航目标并开始规划
-     * @param x 目标 x 坐标 (m)
-     * @param y 目标 y 坐标 (m)
-     * @param yaw 目标偏航角 (rad)
+     * @brief 启动导航：解析 route.yaml 并发送路径点
      */
-    void setGoal(float x, float y, float yaw)
+    void startNavigation()
     {
-        goalPose_.x   = x;
-        goalPose_.y   = y;
-        goalPose_.yaw = yaw;
-
-        if (!latestMap_) {
-            RCLCPP_ERROR(this->get_logger(), "尚未收到地图数据，无法规划");
+        waypoints_ = parseRouteYaml(routeFile_);
+        if (waypoints_.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "路径点为空，文件: %s", routeFile_.c_str());
             return;
         }
 
-        if (!planGlobalPath()) {
-            RCLCPP_ERROR(this->get_logger(), "全局路径规划失败");
-            navigating_ = false;
-            return;
+        RCLCPP_INFO(this->get_logger(), "已读取 %zu 个路径点", waypoints_.size());
+        for (size_t i = 0; i < waypoints_.size(); ++i) {
+            RCLCPP_INFO(this->get_logger(),
+                "  [%zu] x=%.3f y=%.3f yaw=%.3f frame=%s",
+                i + 1, waypoints_[i].x, waypoints_[i].y,
+                waypoints_[i].yaw, waypoints_[i].frame.c_str());
         }
 
-        navigating_ = true;
-        lastReplanTime_ = now();
-        RCLCPP_INFO(this->get_logger(),
-            "开始导航: (%.2f, %.2f) -> (%.2f, %.2f)",
-            currentPose_.x, currentPose_.y, x, y);
+        // 优先使用 FollowWaypoints，不可用时回退到 NavigateToPose
+        if (followWpClient_->wait_for_action_server(std::chrono::seconds(2))) {
+            RCLCPP_INFO(this->get_logger(), "使用 FollowWaypoints 发送全部路径点");
+            sendFollowWaypoints();
+        } else {
+            RCLCPP_INFO(this->get_logger(), "FollowWaypoints 不可用，使用 NavigateToPose 逐个发送");
+            currentWpIndex_ = 0;
+            sendNextWaypoint();
+        }
     }
 
     /**
-     * @brief 停止导航
+     * @brief 停止导航，取消当前动作并停止机器人
      */
     void stopNavigation()
     {
-        navigating_ = false;
-        globalPath_.clear();
+        allDone_ = false;
+        cancelAllGoals();
         go2_motion_stop();
         RCLCPP_INFO(this->get_logger(), "导航已停止");
     }
 
-    /**
-     * @brief 打印当前状态信息
-     */
-    void printStatus()
-    {
-        std::ostringstream oss;
-        oss << "\n=== Go2 导航状态 ===" << std::endl;
-        oss << "AMCL 位姿: (" << std::fixed << std::setprecision(3)
-            << currentPose_.x << ", " << currentPose_.y << ", "
-            << currentPose_.yaw * 180.0 / M_PI << "°)" << std::endl;
-        oss << "目标点:   (" << goalPose_.x << ", " << goalPose_.y << ")" << std::endl;
-        oss << "导航状态: " << (navigating_ ? "运行中" : "空闲") << std::endl;
-        oss << "地图状态: " << (latestMap_ ? "已加载" : "未加载") << std::endl;
-        if (latestMap_) {
-            oss << "地图尺寸: " << latestMap_->info.width
-                << " x " << latestMap_->info.height
-                << " @ " << latestMap_->info.resolution << " m/px" << std::endl;
-        }
-        oss << "全局路径: " << globalPath_.size() << " 点" << std::endl;
-        oss << "====================" << std::endl;
-        std::cout << oss.str() << std::flush;
-    }
-
 private:
+    // ---- YAML 路径点 ----
+    std::string routeFile_;
+    std::vector<Waypoint> waypoints_;
+    size_t currentWpIndex_ = 0;
+    std::atomic<bool> allDone_{false};
+
+    // ---- NavigateToPose 动作客户端 ----
     /**
-     * @brief AMCL 位姿回调
-     * @param msg AMCL 发布的带协方差的位姿消息
+     * @brief 使用 NavigateToPose 逐个发送路径点
      */
-    void amclPoseCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+    void sendNextWaypoint()
     {
-        std::lock_guard<std::mutex> lock(poseMutex_);
-        amclPose_.x   = static_cast<float>(msg->pose.pose.position.x);
-        amclPose_.y   = static_cast<float>(msg->pose.pose.position.y);
-        float qz = static_cast<float>(msg->pose.pose.orientation.z);
-        float qw = static_cast<float>(msg->pose.pose.orientation.w);
-        amclPose_.yaw = std::atan2(2.0f * qz * qw, 1.0f - 2.0f * qz * qz);
-        amclPoseValid_ = true;
+        if (currentWpIndex_ >= waypoints_.size()) {
+            allDone_ = true;
+            RCLCPP_INFO(this->get_logger(), "所有 %zu 个路径点已完成!", waypoints_.size());
+            return;
+        }
+
+        if (!navToPoseClient_->wait_for_action_server(std::chrono::seconds(3))) {
+            RCLCPP_ERROR(this->get_logger(), "NavigateToPose 动作服务器未就绪");
+            return;
+        }
+
+        const auto& wp = waypoints_[currentWpIndex_];
+        auto goalMsg = nav2_msgs::action::NavigateToPose::Goal();
+        goalMsg.pose.header.frame_id = wp.frame;
+        goalMsg.pose.header.stamp = now();
+        goalMsg.pose.pose.position.x = wp.x;
+        goalMsg.pose.pose.position.y = wp.y;
+        goalMsg.pose.pose.position.z = 0.0;
+        goalMsg.pose.pose.orientation.z = std::sin(wp.yaw / 2.0);
+        goalMsg.pose.pose.orientation.w = std::cos(wp.yaw / 2.0);
+
+        RCLCPP_INFO(this->get_logger(),
+            "发送路径点 [%zu/%zu]: x=%.2f y=%.2f yaw=%.2f",
+            currentWpIndex_ + 1, waypoints_.size(), wp.x, wp.y, wp.yaw);
+
+        auto sendGoalOptions = rclcpp_action::Client<
+            nav2_msgs::action::NavigateToPose>::SendGoalOptions();
+        sendGoalOptions.result_callback =
+            [this](const rclcpp_action::ClientGoalHandle<
+                   nav2_msgs::action::NavigateToPose>::WrappedResult& result) {
+                switch (result.code) {
+                case rclcpp_action::ResultCode::SUCCEEDED:
+                    RCLCPP_INFO(this->get_logger(),
+                        "路径点 [%zu/%zu] 已到达",
+                        currentWpIndex_ + 1, waypoints_.size());
+                    currentWpIndex_++;
+                    sendNextWaypoint();
+                    break;
+                case rclcpp_action::ResultCode::ABORTED:
+                    RCLCPP_ERROR(this->get_logger(),
+                        "路径点 [%zu/%zu] 被中止",
+                        currentWpIndex_ + 1, waypoints_.size());
+                    allDone_ = true;
+                    break;
+                case rclcpp_action::ResultCode::CANCELED:
+                    RCLCPP_INFO(this->get_logger(),
+                        "路径点 [%zu/%zu] 已取消",
+                        currentWpIndex_ + 1, waypoints_.size());
+                    break;
+                default:
+                    RCLCPP_ERROR(this->get_logger(), "路径点结果未知");
+                    allDone_ = true;
+                    break;
+                }
+            };
+
+        auto goalHandleFuture = navToPoseClient_->async_send_goal(goalMsg, sendGoalOptions);
+        {
+            std::lock_guard<std::mutex> lock(goalHandleMutex_);
+            navGoalHandle_ = goalHandleFuture.get();
+        }
     }
 
+    // ---- FollowWaypoints 动作客户端 ----
     /**
-     * @brief 地图数据回调
-     * @param msg 占据栅格地图消息
+     * @brief 使用 FollowWaypoints 一次性发送全部路径点
      */
-    void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+    void sendFollowWaypoints()
     {
-        std::lock_guard<std::mutex> lock(mapMutex_);
-        bool mapChanged = !latestMap_
-            || latestMap_->info.width  != msg->info.width
-            || latestMap_->info.height != msg->info.height;
+        auto goalMsg = nav2_msgs::action::FollowWaypoints::Goal();
+        for (const auto& wp : waypoints_) {
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header.frame_id = wp.frame;
+            pose.header.stamp = now();
+            pose.pose.position.x = wp.x;
+            pose.pose.position.y = wp.y;
+            pose.pose.position.z = 0.0;
+            pose.pose.orientation.z = std::sin(wp.yaw / 2.0);
+            pose.pose.orientation.w = std::cos(wp.yaw / 2.0);
+            goalMsg.poses.push_back(pose);
+        }
 
-        latestMap_ = msg;
+        RCLCPP_INFO(this->get_logger(),
+            "发送 FollowWaypoints 目标: %zu 个路径点", waypoints_.size());
 
-        if (mapChanged) {
-            int w = static_cast<int>(msg->info.width);
-            int h = static_cast<int>(msg->info.height);
-            navFnPlanner_.setCostmap(
-                msg->data.data(), w, h,
-                static_cast<float>(msg->info.resolution),
-                static_cast<float>(msg->info.origin.position.x),
-                static_cast<float>(msg->info.origin.position.y));
+        auto sendGoalOptions = rclcpp_action::Client<
+            nav2_msgs::action::FollowWaypoints>::SendGoalOptions();
 
-            // 构建局部代价地图（用于 DWB 避障）
-            localCostmap_.resize(static_cast<size_t>(w * h));
-            std::copy(msg->data.begin(), msg->data.end(), localCostmap_.begin());
-            localCostmapWidth_  = w;
-            localCostmapHeight_ = h;
-            localCostmapRes_    = static_cast<float>(msg->info.resolution);
-            localCostmapOrigX_  = static_cast<float>(msg->info.origin.position.x);
-            localCostmapOrigY_  = static_cast<float>(msg->info.origin.position.y);
+        sendGoalOptions.feedback_callback =
+            [this](rclcpp_action::ClientGoalHandle<
+                   nav2_msgs::action::FollowWaypoints>::SharedPtr,
+                   const std::shared_ptr<const nav2_msgs::action::FollowWaypoints::Feedback> feedback) {
+                RCLCPP_INFO(this->get_logger(),
+                    "FollowWaypoints: 正在前往路径点 %u/%zu",
+                    feedback->current_waypoint + 1, waypoints_.size());
+            };
 
-            RCLCPP_INFO(this->get_logger(),
-                "地图已加载: %d x %d @ %.3f m/px",
-                w, h, msg->info.resolution);
+        sendGoalOptions.result_callback =
+            [this](const rclcpp_action::ClientGoalHandle<
+                   nav2_msgs::action::FollowWaypoints>::WrappedResult& result) {
+                switch (result.code) {
+                case rclcpp_action::ResultCode::SUCCEEDED:
+                    RCLCPP_INFO(this->get_logger(), "全部路径点已完成!");
+                    if (!result.result->missed_waypoints.empty()) {
+                        RCLCPP_WARN(this->get_logger(),
+                            "未到达的路径点: %zu 个",
+                            result.result->missed_waypoints.size());
+                        for (auto idx : result.result->missed_waypoints) {
+                            RCLCPP_WARN(this->get_logger(), "  - 路径点索引: %d", idx);
+                        }
+                    }
+                    allDone_ = true;
+                    break;
+                case rclcpp_action::ResultCode::ABORTED:
+                    RCLCPP_ERROR(this->get_logger(), "FollowWaypoints 被中止");
+                    allDone_ = true;
+                    break;
+                case rclcpp_action::ResultCode::CANCELED:
+                    RCLCPP_INFO(this->get_logger(), "FollowWaypoints 已取消");
+                    break;
+                default:
+                    RCLCPP_ERROR(this->get_logger(), "FollowWaypoints 结果未知");
+                    allDone_ = true;
+                    break;
+                }
+            };
+
+        auto goalHandleFuture = followWpClient_->async_send_goal(goalMsg, sendGoalOptions);
+        {
+            std::lock_guard<std::mutex> lock(goalHandleMutex_);
+            followGoalHandle_ = goalHandleFuture.get();
         }
     }
 
     /**
-     * @brief 全局路径规划
-     * @return true 规划成功
+     * @brief 取消所有进行中的导航动作
      */
-    bool planGlobalPath()
+    void cancelAllGoals()
     {
-        std::lock_guard<std::mutex> lockPose(poseMutex_);
-        std::lock_guard<std::mutex> lockMap(mapMutex_);
-
-        if (!latestMap_ || !amclPoseValid_) return false;
-
-        currentPose_ = amclPose_;
-
-        return navFnPlanner_.planPath(
-            currentPose_.x, currentPose_.y,
-            goalPose_.x, goalPose_.y,
-            globalPath_);
+        std::lock_guard<std::mutex> lock(goalHandleMutex_);
+        if (navGoalHandle_) {
+            navToPoseClient_->async_cancel_goal(navGoalHandle_);
+            navGoalHandle_.reset();
+        }
+        if (followGoalHandle_) {
+            followWpClient_->async_cancel_goal(followGoalHandle_);
+            followGoalHandle_.reset();
+        }
     }
 
+    // ---- 传感器数据发布 ----
     /**
-     * @brief 定时发布传感器数据
+     * @brief 定时发布传感器数据（Odometry、TF、PointCloud2、LaserScan）
      */
     void publishSensorData()
     {
         auto stamp = now();
 
-        // 里程计 + TF
+        // ---- 获取并发布里程计 + TF ----
         float odomX = 0, odomY = 0, odomYaw = 0, odomVx = 0, odomVyaw = 0;
         if (go2_motion_get_odom(&odomX, &odomY, &odomYaw, &odomVx, &odomVyaw)) {
             auto odomMsg = std::make_unique<nav_msgs::msg::Odometry>();
@@ -298,22 +389,26 @@ private:
             odomMsg->child_frame_id = "base_link";
             odomMsg->pose.pose.position.x    = static_cast<double>(odomX);
             odomMsg->pose.pose.position.y    = static_cast<double>(odomY);
+            odomMsg->pose.pose.position.z    = 0.0;
             odomMsg->pose.pose.orientation.z = std::sin(odomYaw / 2.0);
             odomMsg->pose.pose.orientation.w = std::cos(odomYaw / 2.0);
             odomMsg->twist.twist.linear.x    = static_cast<double>(odomVx);
             odomMsg->twist.twist.angular.z   = static_cast<double>(odomVyaw);
             odomPub_->publish(std::move(odomMsg));
 
+            // 广播 TF (odom → base_link)
             auto tfMsg = geometry_msgs::msg::TransformStamped();
             tfMsg.header.stamp = stamp;
             tfMsg.header.frame_id = "odom";
             tfMsg.child_frame_id = "base_link";
             tfMsg.transform.translation.x = static_cast<double>(odomX);
             tfMsg.transform.translation.y = static_cast<double>(odomY);
+            tfMsg.transform.translation.z = 0.0;
             tfMsg.transform.rotation.z = std::sin(odomYaw / 2.0);
             tfMsg.transform.rotation.w = std::cos(odomYaw / 2.0);
             tfBroadcaster_->sendTransform(tfMsg);
 
+            // 广播 TF (base_link → utlidar_lidar)
             auto lidarTf = geometry_msgs::msg::TransformStamped();
             lidarTf.header.stamp = stamp;
             lidarTf.header.frame_id = "base_link";
@@ -323,7 +418,7 @@ private:
             tfBroadcaster_->sendTransform(lidarTf);
         }
 
-        // LiDAR 数据
+        // ---- 获取并发布点云 / LaserScan ----
         constexpr uint32_t MAX_POINTS = 50000;
         static float pointBuf[MAX_POINTS * 4];
         uint32_t pointCount = 0, width = 0, height = 0;
@@ -350,7 +445,6 @@ private:
             rosCloud->data.assign(rawPtr, rawPtr + pointCount * 16);
             cloudPub_->publish(std::move(rosCloud));
 
-            // LaserScan
             auto scanMsg = std::make_unique<sensor_msgs::msg::LaserScan>();
             scanMsg->header.stamp    = stamp;
             scanMsg->header.frame_id = "utlidar_lidar";
@@ -384,175 +478,38 @@ private:
                 }
             }
             scanPub_->publish(std::move(scanMsg));
-
-            // 更新局部代价地图（用当前激光扫描填充障碍物）
-            updateLocalCostmap(scanMsg->ranges.data(), odomX, odomY, odomYaw);
         }
     }
 
     /**
-     * @brief 用激光扫描数据更新局部代价地图
-     * @param scanRanges 激光距离数组
-     * @param robotX 机器人当前 x 坐标 (m)
-     * @param robotY 机器人当前 y 坐标 (m)
-     * @param robotYaw 机器人当前偏航角 (rad)
+     * @brief ROS2 cmd_vel 回调，转发速度指令到 Go2 运动桥接
+     * @param msg Twist 速度指令
      */
-    void updateLocalCostmap(const float* scanRanges, float robotX, float robotY, float robotYaw)
+    void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
     {
-        if (localCostmap_.empty() || !latestMap_) return;
-
-        int w = localCostmapWidth_;
-        int h = localCostmapHeight_;
-        float res  = localCostmapRes_;
-        float origX = localCostmapOrigX_;
-        float origY = localCostmapOrigY_;
-
-        std::lock_guard<std::mutex> lock(localCostmapMutex_);
-
-        // 将激光点映射到代价地图
-        for (int i = 0; i < LASER_SCAN_SAMPLES; ++i) {
-            float range = scanRanges[i];
-            if (std::isinf(range) || range <= 0.0f) continue;
-
-            float angle = static_cast<float>(LIDAR_ANGLE_MIN)
-                        + i * (static_cast<float>(LIDAR_ANGLE_MAX - LIDAR_ANGLE_MIN)
-                               / LASER_SCAN_SAMPLES);
-            float worldAngle = angle + robotYaw;
-            float wx = robotX + range * std::cos(worldAngle);
-            float wy = robotY + range * std::sin(worldAngle);
-
-            int mx = static_cast<int>(std::floor((wx - origX) / res));
-            int my = static_cast<int>(std::floor((wy - origY) / res));
-            if (mx < 0 || mx >= w || my < 0 || my >= h) continue;
-
-            int obsSize = 2; // 障碍物膨胀半径（栅格）
-            for (int dy = -obsSize; dy <= obsSize; ++dy) {
-                for (int dx = -obsSize; dx <= obsSize; ++dx) {
-                    int nx = mx + dx;
-                    int ny = my + dy;
-                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-                    localCostmap_[static_cast<size_t>(ny * w + nx)] = 100;
-                }
-            }
-
-            // 从机器人到障碍物之间标记为空闲区域
-            float step = res * 0.5f;
-            float d = step;
-            while (d < range - step) {
-                float cx = robotX + d * std::cos(worldAngle);
-                float cy = robotY + d * std::sin(worldAngle);
-                int cmx = static_cast<int>(std::floor((cx - origX) / res));
-                int cmy = static_cast<int>(std::floor((cy - origY) / res));
-                if (cmx >= 0 && cmx < w && cmy >= 0 && cmy < h) {
-                    size_t cidx = static_cast<size_t>(cmy * w + cmx);
-                    if (localCostmap_[cidx] >= 0) {
-                        localCostmap_[cidx] = 0;
-                    }
-                }
-                d += step;
-            }
-        }
-    }
-
-    /**
-     * @brief 规划与控制主循环（定时器回调）
-     */
-    void controlLoop()
-    {
-        if (!navigating_) return;
-
-        // 获取当前位置
-        float odomX = 0, odomY = 0, odomYaw = 0, odomVx = 0, odomVyaw = 0;
-        go2_motion_get_odom(&odomX, &odomY, &odomYaw, &odomVx, &odomVyaw);
-
-        Pose2D currentOdom;
-        currentOdom.x   = odomX;
-        currentOdom.y   = odomY;
-        currentOdom.yaw = odomYaw;
-
-        {
-            std::lock_guard<std::mutex> lock(poseMutex_);
-            currentPose_ = currentOdom;
-        }
-
-        // 检查是否到达目标
-        if (dwbPlanner_.isGoalReached(currentOdom, globalPath_)) {
-            RCLCPP_INFO(this->get_logger(), "目标已到达!");
-            navigating_ = false;
-            go2_motion_stop();
-            return;
-        }
-
-        // 检查是否需要重规划
-        rclcpp::Time nowTime = now();
-        double dt = (nowTime - lastReplanTime_).seconds();
-        if (dt > 5.0) {
-            planGlobalPath();
-            lastReplanTime_ = nowTime;
-        }
-
-        // DWB 局部规划
-        float cmdVx = 0.0f, cmdVyaw = 0.0f;
-        {
-            std::lock_guard<std::mutex> lock(localCostmapMutex_);
-            dwbPlanner_.computeVelocity(
-                currentOdom, odomVx, odomVyaw,
-                globalPath_,
-                localCostmap_.data(),
-                localCostmapWidth_, localCostmapHeight_,
-                localCostmapRes_, localCostmapOrigX_, localCostmapOrigY_,
-                cmdVx, cmdVyaw);
-        }
-
-        cmdVx   = std::clamp(cmdVx,   -CMD_VX_MAX, CMD_VX_MAX);
-        cmdVyaw = std::clamp(cmdVyaw, -CMD_VYAW_MAX, CMD_VYAW_MAX);
-
-        go2_motion_move(cmdVx, 0.0f, cmdVyaw);
-
-        // 发布 cmd_vel 供其他节点使用
-        auto cmdMsg = std::make_unique<geometry_msgs::msg::Twist>();
-        cmdMsg->linear.x  = static_cast<double>(cmdVx);
-        cmdMsg->angular.z = static_cast<double>(cmdVyaw);
-        cmdVelPub_->publish(std::move(cmdMsg));
+        float vx   = std::clamp(static_cast<float>(msg->linear.x),
+                               -NAV_FORWARD_SPEED_MAX, NAV_FORWARD_SPEED_MAX);
+        float vyaw = std::clamp(static_cast<float>(msg->angular.z),
+                               -NAV_ANGULAR_SPEED_MAX, NAV_ANGULAR_SPEED_MAX);
+        go2_motion_move(vx, 0.0f, vyaw);
     }
 
     // ---- ROS2 接口 ----
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloudPub_;
-    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr  scanPub_;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr      odomPub_;
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr    cmdVelPub_;
-    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr amclPoseSub_;
-    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mapSub_;
-    rclcpp::TimerBase::SharedPtr                               publishTimer_;
-    rclcpp::TimerBase::SharedPtr                               controlTimer_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster>             tfBroadcaster_;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr   scanPub_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr       odomPub_;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr  cmdVelSub_;
+    rclcpp::TimerBase::SharedPtr                                publishTimer_;
+    std::unique_ptr<tf2_ros::TransformBroadcaster>              tfBroadcaster_;
 
-    // ---- 规划器 ----
-    NavFnPlanner navFnPlanner_;
-    DWBPlanner   dwbPlanner_;
+    // ---- Nav2 动作客户端 ----
+    rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr navToPoseClient_;
+    rclcpp_action::Client<nav2_msgs::action::FollowWaypoints>::SharedPtr followWpClient_;
 
-    // ---- 状态 ----
-    std::atomic<bool> navigating_{false};
-    std::atomic<bool> amclPoseValid_{false};
-    Pose2D amclPose_{};
-    Pose2D currentPose_{};
-    Pose2D goalPose_{};
-    std::vector<PathPoint> globalPath_;
-    rclcpp::Time lastReplanTime_{0, 0, RCL_SYSTEM_TIME};
-
-    // ---- 线程安全 ----
-    mutable std::mutex poseMutex_;
-    mutable std::mutex mapMutex_;
-    mutable std::mutex localCostmapMutex_;
-
-    // ---- 地图数据 ----
-    nav_msgs::msg::OccupancyGrid::SharedPtr latestMap_;
-    std::vector<int8_t> localCostmap_;
-    int localCostmapWidth_  = 0;
-    int localCostmapHeight_ = 0;
-    float localCostmapRes_  = 0.05f;
-    float localCostmapOrigX_ = 0.0f;
-    float localCostmapOrigY_ = 0.0f;
+    // ---- 动作目标句柄（用于取消） ----
+    mutable std::mutex goalHandleMutex_;
+    rclcpp_action::ClientGoalHandle<nav2_msgs::action::NavigateToPose>::SharedPtr navGoalHandle_;
+    rclcpp_action::ClientGoalHandle<nav2_msgs::action::FollowWaypoints>::SharedPtr followGoalHandle_;
 };
 
 // ====================================================================
@@ -564,7 +521,7 @@ static std::mutex g_cmdMutex;
 static std::queue<std::string> g_cmdQueue;
 
 /**
- * @brief 输入线程函数，持续从标准输入读取指令
+ * @brief 输入线程函数，持续从标准输入读取命令行指令
  */
 static void inputThreadFunc()
 {
@@ -584,31 +541,23 @@ static void inputThreadFunc()
 static void printHelp()
 {
     std::cout << "\n+----------------------------------------------------+\n";
-    std::cout <<   "|  Go2 自主导航程序 (NavFn + DWB)                   |\n";
+    std::cout <<   "|  Go2 自主导航程序 (Nav2 动作接口)                  |\n";
     std::cout <<   "+----------------------------------------------------+\n";
-    std::cout <<   "|  需配合 AMCL + map_server 节点使用                 |\n";
+    std::cout <<   "|  启动后自动读取 route.yaml 并发送路径点              |\n";
+    std::cout <<   "|  优先使用 FollowWaypoints，回退 NavigateToPose       |\n";
     std::cout <<   "+----------------------------------------------------+\n";
-    std::cout <<   "|  命令 (输入后按回车):                              |\n";
-    std::cout <<   "|    g / 1 - 导航目标 (x=2, y=0) 向前 2m            |\n";
-    std::cout <<   "|    n x y yaw  - 导航到自定义坐标 (如: n 1.5 -2 0)   |
-";
-    std::cout <<   "|    2     - 导航目标 (x=0, y=2) 向左 2m            |\n";
-    std::cout <<   "|    3     - 导航目标 (x=2, y=2) 右前方              |\n";
-    std::cout <<   "|    p     - 打印当前导航状态                        |\n";
-    std::cout <<   "|    s     - 停止导航                               |\n";
-    std::cout <<   "|    q     - 退出程序                               |\n";
+    std::cout <<   "|  命令 (输入后按回车):                               |\n";
+    std::cout <<   "|    r     - 重新发送所有路径点                       |\n";
+    std::cout <<   "|    s     - 停止导航                                |\n";
+    std::cout <<   "|    q     - 退出程序                                |\n";
     std::cout <<   "+----------------------------------------------------+\n";
-    std::cout <<   "|  启动示例:                                         |\n";
-    std::cout <<   "|    ros2 run nav2_map_server map_server \\           |\n";
-    std::cout <<   "|      --ros-args -p yaml_filename:=./map.yaml        |\n";
-    std::cout <<   "|    ros2 run nav2_amcl amcl                         |\n";
-    std::cout <<   "|    ./go2_navigation eth0                           |\n";
+    std::cout <<   "|  配合: 需在其他终端启动 Nav2 导航栈 + AMCL + 地图    |\n";
     std::cout <<   "+----------------------------------------------------+\n";
     std::cout << "\n> " << std::flush;
 }
 
 /**
- * @brief 处理命令行指令
+ * @brief 处理来自命令队列的指令
  * @param node 导航节点共享指针
  */
 static void processCommands(std::shared_ptr<Go2NavigationNode> node)
@@ -628,27 +577,12 @@ static void processCommands(std::shared_ptr<Go2NavigationNode> node)
             rclcpp::shutdown();
             return;
 
-        case 'g':
-        case 'G':
-        case '1':
-            node->setGoal(2.0f, 0.0f, 0.0f);
-            std::cout << "> " << std::flush;
-            break;
-
-        case '2':
-            node->setGoal(0.0f, 2.0f, static_cast<float>(M_PI_2));
-            std::cout << "> " << std::flush;
-            break;
-
-        case '3':
-            node->setGoal(2.0f, 2.0f, static_cast<float>(M_PI_4));
-            std::cout << "> " << std::flush;
-            break;
-
-        case 'p':
-        case 'P':
-            node->printStatus();
-            std::cout << "\n> " << std::flush;
+        case 'r':
+        case 'R':
+            std::cout << ">>> 重新发送路径点\n> " << std::flush;
+            node->stopNavigation();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            node->startNavigation();
             break;
 
         case 's':
@@ -667,17 +601,19 @@ static void processCommands(std::shared_ptr<Go2NavigationNode> node)
 /**
  * @brief Go2 自主导航程序入口
  * @param argc 参数个数
- * @param argv 参数列表，argv[1] 为网络接口名称
- * @return int 0 正常退出，-1 异常
+ * @param argv 参数列表，argv[1] 为网络接口，argv[2] 为可选 route.yaml 路径
+ * @return int 0 正常退出，-1 异常退出
  */
 int main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::cout << "用法: " << argv[0] << " <network_interface>" << std::endl;
+        std::cout << "用法: " << argv[0] << " <network_interface> [route_file]" << std::endl;
         std::cout << "示例: " << argv[0] << " eth0" << std::endl;
+        std::cout << "      " << argv[0] << " eth0 ../src/route.yaml" << std::endl;
         return -1;
     }
     std::string netInterface = argv[1];
+    std::string routeFile = (argc >= 3) ? argv[2] : "src/route.yaml";
 
     // ---- 初始化 Go2 运动桥接 ----
     std::cout << "正在初始化 Go2 运动桥接 (接口: " << netInterface << ")..." << std::endl;
@@ -690,7 +626,7 @@ int main(int argc, char** argv)
     // ---- 初始化 ROS2 ----
     rclcpp::init(argc, argv);
 
-    auto node = std::make_shared<Go2NavigationNode>(netInterface);
+    auto node = std::make_shared<Go2NavigationNode>(netInterface, routeFile);
 
     // ---- 机器人站立 ----
     go2_motion_stand_up();
@@ -702,6 +638,12 @@ int main(int argc, char** argv)
     std::thread inputThread(inputThreadFunc);
     inputThread.detach();
 
+    // ---- 自动开始导航 ----
+    std::cout << ">>> 正在启动自动导航..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    node->startNavigation();
+    std::cout << "> " << std::flush;
+
     // ---- 主循环 ----
     while (rclcpp::ok() && g_running) {
         rclcpp::spin_some(node);
@@ -709,6 +651,7 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    node->stopNavigation();
     go2_motion_stop();
     go2_motion_stand_down();
     std::this_thread::sleep_for(std::chrono::seconds(1));
