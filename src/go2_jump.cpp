@@ -42,7 +42,7 @@ constexpr float ROI_X_MIN          = 0.2f;     ///< 前方最近检测距离 (m)
 constexpr float ROI_X_MAX          = 3.0f;     ///< 前方最远检测距离 (m)
 constexpr float ROI_Y_RANGE        = 2.0f;     ///< 左右检测范围 (±m)
 constexpr float ROI_Z_MIN          = 0.02f;    ///< 横棒最低高度 (m)
-constexpr float ROI_Z_MAX          = 0.10f;    ///< 横棒最高高度 (m)
+constexpr float ROI_Z_MAX          = 0.7f;    ///< 横棒最高高度 (m)
 constexpr float VOXEL_LEAF_SIZE    = 0.02f;    ///< 体素降采样叶子大小 (m)
 constexpr float RANSAC_THRESHOLD   = 0.03f;    ///< RANSAC 直线拟合距离阈值 (m)
 constexpr int   RANSAC_MAX_ITER    = 1000;     ///< RANSAC 最大迭代次数
@@ -426,13 +426,22 @@ int main(int argc, char** argv)
     std::cout <<   "+------------------------------------------------+\n";
     std::cout << "\n等待横棒检测..." << std::endl;
 
-    // ---- 主循环: ROS2 spin + 键盘控制 ----
-    // 由于控制逻辑在 ROS2 定时器中运行，主线程仅处理键盘输入
+    // ---- 主循环: ROS2 spin + 键盘控制 + 自动退出 ----
+    // 控制逻辑在 ROS2 定时器中运行，主线程处理键盘输入并检查完成状态
     while (rclcpp::ok() && g_running) {
         rclcpp::spin_some(node);
 
+        // 跳一次后自动退出
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            if (g_state == JumpState::DONE) {
+                std::cout << "\n越障完成，程序自动退出。" << std::endl;
+                g_running = false;
+                break;
+            }
+        }
+
         // 检查标准输入是否有键盘输入（非阻塞轮询）
-        // 注意: 由于终端可能被其他输出打断，这里使用简单的轮询方式
         struct timeval tv = {0, 50000}; // 50ms timeout
         fd_set fds;
         FD_ZERO(&fds);
