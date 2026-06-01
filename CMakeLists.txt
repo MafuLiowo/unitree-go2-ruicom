@@ -138,6 +138,19 @@ add_library(YOLODetector src/YOLODetector.cpp)
 target_include_directories(YOLODetector PUBLIC ${PROJECT_INCLUDES})
 target_link_libraries(YOLODetector ${OpenCV_LIBS})
 
+# Go2 action library (视觉动作联动模块，YOLO识别触发运动/灯光动作)
+add_library(Go2Action src/Go2Action.cpp)
+add_unitree_includes(Go2Action)
+target_include_directories(Go2Action PUBLIC ${PROJECT_INCLUDES})
+target_link_libraries(Go2Action
+    YOLODetector
+    unitree_sdk2
+    ddsc
+    ddscxx
+    ${OpenCV_LIBS}
+    Threads::Threads
+)
+
 # YOLO identify executable (目标检测识别程序，使用 Go2 原生摄像头)
 add_executable(go2_yolo_identify src/go2_yolo_identify.cpp)
 add_unitree_includes(go2_yolo_identify)
@@ -154,12 +167,7 @@ target_link_libraries(go2_yolo_identify
 add_executable(go2_action src/go2_action.cpp)
 add_unitree_includes(go2_action)
 target_link_libraries(go2_action
-    YOLODetector
-    unitree_sdk2
-    ddsc
-    ddscxx
-    ${OpenCV_LIBS}
-    Threads::Threads
+    Go2Action
 )
 
 # Walking executable (视觉巡线行走程序，RealSense二值化+路径检测+运动控制)
@@ -308,6 +316,7 @@ target_include_directories(main PRIVATE
 )
 target_link_libraries(main
     go2_motion_bridge
+    Go2Action
     DWBPlanner
     NavFnPlanner
     YOLODetector
