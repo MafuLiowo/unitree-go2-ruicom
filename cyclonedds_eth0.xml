@@ -1,0 +1,19 @@
+<General>
+    <Interfaces>
+        <!-- 同时监听本地回环和物理网卡 -->
+        <NetworkInterface name="lo" priority="default" multicast="default" />
+        <NetworkInterface name="eth0" priority="default" multicast="default" />
+    </Interfaces>
+    <AllowMulticast>default</AllowMulticast>
+    <MaxMessageSize>65500B</MaxMessageSize>
+</General>
+
+<Discovery>
+    <!-- 如果开启了组播，通常不需要手动指定 Peer -->
+    <!-- 但如果跨网段或组播被禁，可以这样配置 -->
+    <Peers>
+        <Peer Address="127.0.0.1"/>
+        <!-- 外部设备的 IP -->
+        <Peer Address="192.168.123.23"/>
+    </Peers>
+</Discovery>

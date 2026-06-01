@@ -1,0 +1,13 @@
+<General>
+    <Interfaces>
+        <!-- 只监听 eth0 用于外部通信 -->
+        <NetworkInterface name="eth0" priority="default" multicast="default" />
+    </Interfaces>
+    <AllowMulticast>default</AllowMulticast>
+    <MaxMessageSize>65500B</MaxMessageSize>
+</General>
+
+<!-- 启用共享内存，同机进程自动通过共享内存通信，不走网络 -->
+<SharedMemory>
+    <Enable>true</Enable>
+</SharedMemory>
